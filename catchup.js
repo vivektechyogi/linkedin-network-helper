@@ -1,0 +1,828 @@
+/* LinkedIn Catch-up Messenger — content script
+ * Injects a side panel on the "Catch up" page. Scans the cards (work
+ * anniversaries, new jobs, birthdays, …), lets you pick who to message, and
+ * sends a per-event-type template (with an optional appended note) to each,
+ * one at a time, with randomized human-like timing.
+ *
+ * Runs entirely locally in your browser. Nothing leaves the page.
+ *
+ * NOTE: the message-composer selectors are isolated in clearly marked helpers
+ * near the bottom — these are the parts most likely to need tuning if
+ * LinkedIn changes its markup.
+ */
+(() => {
+  "use strict";
+
+  if (window.__liCatchupLoaded) return;
+  window.__liCatchupLoaded = true;
+
+  const DEFAULTS = {
+    minDelayMs: 8000,
+    maxDelayMs: 16000,
+    longRestEvery: 6,
+    longRestMinMs: 30000,
+    longRestMaxMs: 70000,
+    maxPerSession: 25,
+  };
+
+  // Per-event message templates. {name} is replaced with the person's first name.
+  const TEMPLATE_DEFAULTS = {
+    newJob: "Congrats on the new role, {name}! Wishing you a great start. 🎉",
+    anniversary: "Happy work anniversary, {name}! Hope it's been a rewarding journey. 🙌",
+    birthday: "Happy birthday, {name}! Hope you have a wonderful day. 🎂",
+    default: "Congrats, {name}! 🎉",
+  };
+
+  let cfg = { ...DEFAULTS };
+  let templates = { ...TEMPLATE_DEFAULTS };
+  let appendText = "";
+  let useSuggested = false; // if true: keep LinkedIn's pre-filled text, only append
+  let sendSecond = false; // if true: send appendText as a separate 2nd message
+
+  let scanned = []; // [{ id, name, firstName, eventText, type, cardEl, btnEl, selected }]
+  let running = false;
+  let stopRequested = false;
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const rand = (min, max) => Math.floor(min + Math.random() * (max - min));
+  const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+  const firstNameOf = (name) => norm(name).split(/\s+/)[0] || name;
+
+  // ---- event classification -------------------------------------------
+  function classify(text) {
+    const t = (text || "").toLowerCase();
+    if (/birthday/.test(t)) return "birthday";
+    if (/completed \d+ years?|anniversar|\byears?\b.*\b(at|with)\b|work anniversary|been at/.test(t))
+      return "anniversary";
+    if (/new (job|role|position)|started|joined|promot|now (a|an|the)/.test(t))
+      return "newJob";
+    return "default";
+  }
+
+  const TYPE_LABEL = {
+    newJob: "New job",
+    anniversary: "Anniversary",
+    birthday: "Birthday",
+    default: "Other",
+  };
+
+  // ===== SELECTORS (most likely to need tuning) ========================
+
+  // Catch-up action = an <a> linking to /messaging/compose with the suggested
+  // message in the URL body param and aria-label "Message <name>: <body>".
+  function findCardButtons() {
+    const out = [];
+    const seen = new Set();
+    document
+      .querySelectorAll("a[href*='/messaging/compose'][aria-label]")
+      .forEach((a) => {
+        const aria = norm(a.getAttribute("aria-label"));
+        if (!/^message\s+/i.test(aria)) return;
+        if (a.closest("[role='dialog']")) return;
+        if (seen.has(a)) return;
+        seen.add(a);
+        out.push(a);
+      });
+    return out;
+  }
+
+  // Pull name, LinkedIn's suggested message, and the event description out of a
+  // card. Name + suggested come from the compose link; event text from the card.
+  function cardInfoFromButton(btn) {
+    const card =
+      btn.closest("[role='listitem']") ||
+      btn.closest("[componentkey]") ||
+      btn.parentElement;
+
+    // aria-label = "Message Viranch Gupta: Happy belated birthday!"
+    const aria = norm(btn.getAttribute("aria-label"));
+    let name = "";
+    let suggested = "";
+    const m = aria.match(/^message\s+(.+?):\s*(.*)$/i);
+    if (m) {
+      name = m[1].trim();
+      suggested = m[2].trim();
+    }
+    // canonical body from the URL (handles odd punctuation better than aria)
+    try {
+      const url = new URL(btn.href, location.origin);
+      const b = url.searchParams.get("body");
+      if (b) suggested = b;
+    } catch (_) {}
+
+    if (!name && card) {
+      const link = card.querySelector("a[href*='/in/']");
+      const img = link && link.querySelector("img[alt]");
+      if (img)
+        name = norm(img.getAttribute("alt"))
+          .replace(/['’]s profile picture$/i, "")
+          .trim();
+    }
+    name = name || "(unknown)";
+
+    // event description: the card paragraph that isn't the name or the suggestion
+    let eventText = "";
+    if (card) {
+      let best = "";
+      card.querySelectorAll("p").forEach((p) => {
+        const t = norm(p.textContent);
+        if (
+          t &&
+          t !== name &&
+          t !== suggested &&
+          !/^message/i.test(t) &&
+          !/\b(reaction|comment)s?\b/i.test(t) &&
+          t.length > best.length &&
+          t.length < 200
+        )
+          best = t;
+      });
+      eventText = best;
+    }
+
+    return { name, suggested, eventText: eventText || "—", card, btn };
+  }
+
+  // querySelectorAll that pierces open shadow roots (the messaging overlay on
+  // the SDUI catch-up page is rendered inside a shadow root).
+  function deepQueryAll(selector) {
+    const out = [];
+    const walk = (root) => {
+      try {
+        root.querySelectorAll(selector).forEach((n) => out.push(n));
+      } catch (_) {}
+      try {
+        root.querySelectorAll("*").forEach((el) => {
+          if (el.shadowRoot) walk(el.shadowRoot);
+        });
+      } catch (_) {}
+    };
+    walk(document);
+    return out;
+  }
+
+  // Collect every editable-ish element across the document AND open shadow roots.
+  function collectEditables() {
+    return deepQueryAll("[contenteditable], [role='textbox'], textarea");
+  }
+
+  function clsOf(el) {
+    return (el.className && el.className.toString && el.className.toString()) || "";
+  }
+
+  // The messaging overlay's editable box. Score candidates so we pick the real
+  // message editor even as LinkedIn varies its markup.
+  function findComposerEditor() {
+    const cands = collectEditables().filter((el) => {
+      if (el.tagName === "TEXTAREA") return true;
+      const ce = el.getAttribute("contenteditable");
+      if (ce === "false") return false;
+      return ce !== null || el.getAttribute("role") === "textbox";
+    });
+    const score = (el) => {
+      let s = 0;
+      if (/msg-form__contenteditable/.test(clsOf(el))) s += 100;
+      try {
+        if (el.closest && el.closest(".msg-form, [class*='msg-overlay'], [class*='msg-'], form"))
+          s += 20;
+      } catch (_) {}
+      const aria = el.getAttribute("aria-label") || "";
+      if (/message/i.test(aria)) s += 10;
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) s += 5;
+      return s;
+    };
+    cands.sort((a, b) => score(b) - score(a));
+    return cands.length && score(cands[0]) > 0 ? cands[0] : cands[0] || null;
+  }
+
+  // Dump what's on the page so we can see why the editor wasn't found.
+  function logEditorDiagnostics() {
+    const all = collectEditables();
+    console.log("[LI Catchup] editable candidates:", all.length);
+    all.forEach((el, i) =>
+      console.log(
+        `  #${i}`,
+        el.tagName,
+        "| class=", clsOf(el).slice(0, 60),
+        "| ce=", el.getAttribute("contenteditable"),
+        "| role=", el.getAttribute("role"),
+        "| aria=", el.getAttribute("aria-label")
+      )
+    );
+    console.log(
+      "[LI Catchup] .msg-form present:",
+      !!document.querySelector(".msg-form, [class*='msg-overlay']")
+    );
+  }
+
+  // Build an Enter KeyboardEvent that actually reports keyCode/which === 13.
+  // The KeyboardEvent constructor ignores keyCode/which in its init dict, so we
+  // force them on with defineProperty — LinkedIn's editor checks keyCode.
+  function makeEnter(type) {
+    const e = new KeyboardEvent(type, {
+      key: "Enter",
+      code: "Enter",
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+    });
+    Object.defineProperty(e, "keyCode", { get: () => 13 });
+    Object.defineProperty(e, "which", { get: () => 13 });
+    Object.defineProperty(e, "charCode", { get: () => (type === "keypress" ? 13 : 0) });
+    return e;
+  }
+
+  function pressEnter(el) {
+    el.focus();
+    el.dispatchEvent(makeEnter("keydown"));
+    el.dispatchEvent(makeEnter("keypress"));
+    el.dispatchEvent(makeEnter("keyup"));
+  }
+
+  // Confirm a send by re-querying a FRESH editor (the old node detaches on
+  // re-render) and checking it's now empty. A stale reference lies.
+  function confirmedSent() {
+    const ed = findComposerEditor();
+    return !!ed && norm(ed.textContent).length === 0;
+  }
+
+  // Try several ways to actually submit, confirming after each. Returns true
+  // only when the editor is confirmed empty (message left the box).
+  async function sendMessage(editor) {
+    // 1) An explicit Send button, if this state has one.
+    const sendBtn = deepQueryAll(
+      "button.msg-form__send-button, form.msg-form button, button"
+    ).find((b) => norm(b.textContent).toLowerCase() === "send" && !b.disabled);
+    if (sendBtn) {
+      await humanClick(sendBtn);
+      await sleep(rand(700, 1100));
+      if (confirmedSent()) return true;
+    }
+
+    // 2) Submit the message form directly (most reliable for Enter-to-send UIs).
+    const form =
+      (editor.closest && editor.closest("form.msg-form, form")) ||
+      document.querySelector("form.msg-form, form.msg-form--thread-footer-feature");
+    if (form) {
+      try {
+        if (form.requestSubmit) form.requestSubmit();
+        else form.submit();
+      } catch (_) {}
+      await sleep(rand(700, 1100));
+      if (confirmedSent()) return true;
+    }
+
+    // 3) Enter key on the (freshly found) editor, retried.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const ed = findComposerEditor() || editor;
+      ed.focus();
+      await sleep(rand(150, 350));
+      pressEnter(ed);
+      await sleep(rand(700, 1100));
+      if (confirmedSent()) return true;
+    }
+    return false;
+  }
+
+  // Close EVERY open message overlay so each send starts from a clean slate.
+  // Polls/retries until no editor remains, so a stale conversation can never be
+  // reused for the next person.
+  async function closeAllComposers() {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const closers = deepQueryAll("button").filter((c) => {
+        const label = norm(c.getAttribute("aria-label") || c.textContent || "").toLowerCase();
+        if (/^close your (draft )?conversation/.test(label)) return true;
+        if (/^close conversation/.test(label)) return true;
+        // close-small icon inside a messaging-overlay header control
+        const hasCloseIcon =
+          c.querySelector &&
+          c.querySelector("[data-test-icon='close-small'], use[href='#close-small']");
+        const cls = clsOf(c);
+        return !!hasCloseIcon && /msg-overlay|conversation-bubble/.test(cls);
+      });
+      if (!closers.length && !findComposerEditor()) return true;
+      closers.forEach((c) => {
+        try {
+          c.click();
+        } catch (_) {}
+      });
+      await sleep(450);
+      if (!findComposerEditor()) return true;
+    }
+    return !findComposerEditor();
+  }
+
+  // Read who the currently-open composer is addressed to, so we never send to
+  // the wrong person if an old overlay is still around.
+  function getComposerRecipient() {
+    const pill = deepQueryAll(
+      "[class*='added-recipients'] .artdeco-pill__text, .artdeco-pill__text"
+    )[0];
+    if (pill) return norm(pill.textContent);
+    const card = deepQueryAll(
+      ".msg-s-profile-card .artdeco-entity-lockup__title, .artdeco-entity-lockup__title"
+    )[0];
+    if (card) return norm(card.textContent);
+    const title = deepQueryAll(".msg-overlay-bubble-header__title")[0];
+    if (title) {
+      const t = norm(title.textContent);
+      if (t && !/new message/i.test(t)) return t;
+    }
+    return "";
+  }
+
+  // ===== end selectors =================================================
+
+  function scan() {
+    const list = [];
+    findCardButtons().forEach((btn, i) => {
+      const info = cardInfoFromButton(btn);
+      const type = classify(info.eventText + " " + norm(btn.getAttribute("aria-label")));
+      list.push({
+        id: "cu_" + i + "_" + info.name.replace(/\W+/g, "").slice(0, 16),
+        name: info.name,
+        firstName: firstNameOf(info.name),
+        eventText: info.eventText,
+        suggested: info.suggested,
+        type,
+        cardEl: info.card,
+        btnEl: info.btn,
+        selected: false,
+      });
+    });
+    scanned = list;
+    renderRows();
+    setStatus(
+      list.length
+        ? `Found ${list.length} catch-up card(s). Pick who to message.`
+        : "No catch-up cards found. Scroll the page, then Scan again."
+    );
+  }
+
+  // The congratulations message only (no appended note).
+  function congratsMessage(item) {
+    if (useSuggested) return item.suggested;
+    const tpl = templates[item.type] || templates.default;
+    return tpl.replace(/\{name\}/g, item.firstName);
+  }
+
+  // ---- human-like interaction -----------------------------------------
+  async function humanClick(el) {
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    await sleep(rand(500, 1200));
+    const rect = el.getBoundingClientRect();
+    const x = rect.left + rect.width * (0.3 + Math.random() * 0.4);
+    const y = rect.top + rect.height * (0.3 + Math.random() * 0.4);
+    const base = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+    el.dispatchEvent(new MouseEvent("mouseover", base));
+    el.dispatchEvent(new MouseEvent("mousemove", base));
+    await sleep(rand(60, 200));
+    el.dispatchEvent(new PointerEvent("pointerdown", { ...base, pointerType: "mouse" }));
+    el.dispatchEvent(new MouseEvent("mousedown", base));
+    await sleep(rand(50, 160));
+    el.dispatchEvent(new PointerEvent("pointerup", { ...base, pointerType: "mouse" }));
+    el.dispatchEvent(new MouseEvent("mouseup", base));
+    el.dispatchEvent(new MouseEvent("click", base));
+  }
+
+  // Type text into a contenteditable, char-by-char-ish, so it registers with
+  // LinkedIn's editor and looks like real typing.
+  async function typeInto(editor, text, { append }) {
+    editor.focus();
+    await sleep(rand(200, 500));
+    if (!append) {
+      // clear existing pre-filled text
+      document.execCommand("selectAll", false, null);
+      document.execCommand("delete", false, null);
+    } else {
+      // move caret to end
+      const sel = window.getSelection();
+      sel.selectAllChildren(editor);
+      sel.collapseToEnd();
+      // separate appended note from existing text
+      insertChunk(editor, "\n\n");
+    }
+    // type in small chunks with jitter
+    const chunks = text.match(/.{1,3}/gs) || [text];
+    for (const ch of chunks) {
+      if (stopRequested) break;
+      insertChunk(editor, ch);
+      await sleep(rand(25, 90));
+    }
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  function insertChunk(editor, str) {
+    const ok = document.execCommand("insertText", false, str);
+    if (!ok) {
+      // fallback for editors that block execCommand
+      editor.dispatchEvent(
+        new InputEvent("beforeinput", { inputType: "insertText", data: str, bubbles: true, cancelable: true })
+      );
+      editor.textContent += str;
+      editor.dispatchEvent(
+        new InputEvent("input", { inputType: "insertText", data: str, bubbles: true })
+      );
+    }
+  }
+
+  // Replace the editor's entire content with `text`. Used to force our intended
+  // message in when LinkedIn's URL pre-fill ignores our appended/custom text.
+  async function setEditorText(editor, text) {
+    editor.focus();
+    await sleep(rand(150, 350));
+    // select everything currently in the editor, then overwrite it
+    document.execCommand("selectAll", false, null);
+    await sleep(40);
+    const ok = document.execCommand("insertText", false, text);
+    if (!ok) {
+      // fallback: clear then type in chunks
+      document.execCommand("delete", false, null);
+      await typeInto(editor, text, { append: false });
+    }
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(rand(100, 250));
+  }
+
+  // The first message to send. The note is folded in here only when NOT sending
+  // it as a separate second message.
+  function finalMessage(item) {
+    const base = congratsMessage(item);
+    const extra = norm(appendText);
+    if (sendSecond) return base; // note goes out separately afterwards
+    return extra ? `${base}\n\n${extra}` : base;
+  }
+
+  // Returns { ok: true } or { ok: false, msg: "<reason>" }.
+  async function sendOne(item) {
+    if (!document.body.contains(item.btnEl))
+      return { ok: false, msg: "Card no longer on page — re-scan." };
+
+    const msg = finalMessage(item);
+
+    // Start clean: close any overlay left open from a previous person.
+    await closeAllComposers();
+    await sleep(rand(300, 700));
+
+    // Pre-fill our message by rewriting the compose URL's body param, so the
+    // overlay opens already containing our text (no fragile typing needed).
+    try {
+      const url = new URL(item.btnEl.href, location.origin);
+      url.searchParams.set("body", msg);
+      item.btnEl.setAttribute("href", url.toString());
+    } catch (_) {}
+
+    await humanClick(item.btnEl);
+
+    // Wait for the composer editor to appear AND for the pre-filled text to
+    // actually land — LinkedIn populates the body from the URL asynchronously,
+    // so we must poll for non-empty content rather than checking once.
+    let editor = null;
+    let hasText = false;
+    const deadline = Date.now() + 12000;
+    while (Date.now() < deadline) {
+      editor = findComposerEditor();
+      if (editor && norm(editor.textContent).length > 0) {
+        hasText = true;
+        break;
+      }
+      await sleep(300);
+    }
+    if (!editor) {
+      logEditorDiagnostics();
+      return {
+        ok: false,
+        msg: "Couldn't locate the message box. A diagnostic was printed to the console (F12) — paste it back.",
+      };
+    }
+
+    // SAFETY: make sure the open box is addressed to the right person before
+    // sending — guards against an old overlay still being on screen.
+    const recipient = getComposerRecipient();
+    if (
+      recipient &&
+      !recipient.toLowerCase().includes(item.firstName.toLowerCase())
+    ) {
+      await closeAllComposers();
+      return {
+        ok: false,
+        msg: `Open box was addressed to "${recipient}", not ${item.name}. Skipped to avoid wrong send.`,
+      };
+    }
+
+    // Ensure the editor actually contains our intended message. LinkedIn's URL
+    // pre-fill often ignores our appended/custom text, so if what's in the box
+    // doesn't match, overwrite it directly.
+    if (norm(editor.textContent) !== norm(msg)) {
+      await setEditorText(editor, msg);
+      await sleep(rand(400, 900));
+    }
+    if (norm(editor.textContent).length === 0)
+      return { ok: false, msg: "Message box opened but stayed empty after typing." };
+
+    const sent = await sendMessage(editor);
+    await sleep(rand(800, 1500));
+    if (!sent) {
+      await closeAllComposers();
+      return {
+        ok: false,
+        msg: "Box opened & text filled, but it didn't send (LinkedIn blocked the submit).",
+      };
+    }
+
+    // Optional follow-up: send the note as a separate second message in the now
+    // open conversation (recipient is already correct).
+    const note = norm(appendText);
+    if (sendSecond && note) {
+      await sleep(rand(1500, 3000)); // human pause between two messages
+      let ed2 = null;
+      const dl = Date.now() + 8000;
+      while (Date.now() < dl) {
+        ed2 = findComposerEditor();
+        if (ed2 && norm(ed2.textContent).length === 0) break;
+        await sleep(300);
+      }
+      if (ed2) {
+        await setEditorText(ed2, note);
+        await sleep(rand(500, 1100));
+        const sent2 = await sendMessage(ed2);
+        await sleep(rand(700, 1300));
+        if (!sent2) {
+          await closeAllComposers();
+          return { ok: false, msg: "1st message sent, but the 2nd (your note) didn't send." };
+        }
+      } else {
+        await closeAllComposers();
+        return { ok: false, msg: "1st message sent, but the follow-up box never reopened." };
+      }
+    }
+
+    await closeAllComposers();
+    await sleep(rand(500, 1100));
+    return { ok: true };
+  }
+
+  async function process() {
+    if (running) return;
+    const targets = scanned.filter((s) => s.selected);
+    if (!targets.length) {
+      setStatus("Nothing selected. Tick some rows first.");
+      return;
+    }
+    running = true;
+    stopRequested = false;
+    setRunningUI(true);
+
+    const queue = targets.slice(0, cfg.maxPerSession);
+    if (targets.length > cfg.maxPerSession)
+      setStatus(`Capped at ${cfg.maxPerSession} this session. Processing first ${cfg.maxPerSession}.`);
+
+    let done = 0;
+    for (let i = 0; i < queue.length; i++) {
+      if (stopRequested) {
+        setStatus(`Stopped. Sent ${done} of ${queue.length}.`);
+        break;
+      }
+      const item = queue[i];
+      markRow(item.id, "working");
+      setStatus(`Messaging ${i + 1}/${queue.length}: ${item.name}…`);
+      try {
+        const res = await sendOne(item);
+        if (res.ok) {
+          markRow(item.id, "done");
+          done++;
+        } else {
+          markRow(item.id, "error", res.msg);
+          console.warn("[LI Catchup]", item.name, res.msg);
+        }
+      } catch (e) {
+        console.error("[LI Catchup]", e);
+        markRow(item.id, "error", e && e.message ? e.message : String(e));
+      }
+
+      if (i < queue.length - 1 && !stopRequested) {
+        let wait = rand(cfg.minDelayMs, cfg.maxDelayMs);
+        if (done > 0 && done % cfg.longRestEvery === 0) {
+          wait = rand(cfg.longRestMinMs, cfg.longRestMaxMs);
+          setStatus(`Taking a longer break (${Math.round(wait / 1000)}s)…`);
+        }
+        await sleep(wait);
+      }
+    }
+
+    running = false;
+    setRunningUI(false);
+    if (!stopRequested) setStatus(`Done. Sent ${done} message(s).`);
+  }
+
+  // ---- panel UI --------------------------------------------------------
+  let panel;
+
+  function buildPanel() {
+    panel = document.createElement("div");
+    panel.id = "liw-panel";
+    panel.innerHTML = `
+      <div id="liw-header">
+        <span id="liw-title">Catch-up Messenger</span>
+        <button id="liw-collapse" title="Collapse">–</button>
+      </div>
+      <div id="liw-body">
+        <div id="liw-controls">
+          <button id="liw-scan" class="liw-btn">Scan page</button>
+          <button id="liw-process" class="liw-btn liw-primary">Send to selected</button>
+          <button id="liw-stop" class="liw-btn liw-danger" disabled>Stop</button>
+        </div>
+        <div id="liw-select-row">
+          <label><input type="checkbox" id="liw-all"> Select all</label>
+          <span id="liw-count">0 selected</span>
+        </div>
+        <div id="liw-status">Click “Scan page” to load catch-up cards.</div>
+        <div id="liw-list"></div>
+
+        <details id="liw-templates" open>
+          <summary>Message templates</summary>
+          <label class="liw-tpl">New job
+            <textarea id="liw-tpl-newJob" rows="2"></textarea></label>
+          <label class="liw-tpl">Work anniversary
+            <textarea id="liw-tpl-anniversary" rows="2"></textarea></label>
+          <label class="liw-tpl">Birthday
+            <textarea id="liw-tpl-birthday" rows="2"></textarea></label>
+          <label class="liw-tpl">Other / default
+            <textarea id="liw-tpl-default" rows="2"></textarea></label>
+          <p class="liw-hint">Use <code>{name}</code> for the person's first name.</p>
+          <label class="liw-tpl">Your note / pitch (optional)
+            <textarea id="liw-append" rows="3" placeholder="e.g. P.S. I build custom trading tools…"></textarea></label>
+          <label class="liw-check"><input type="checkbox" id="liw-second">
+            Send my note as a separate 2nd message (instead of appending)</label>
+          <label class="liw-check"><input type="checkbox" id="liw-suggested">
+            Keep LinkedIn's suggested text instead of my templates</label>
+        </details>
+
+        <details id="liw-settings">
+          <summary>Timing settings</summary>
+          <label>Min delay (s) <input type="number" id="liw-min" min="3" step="1"></label>
+          <label>Max delay (s) <input type="number" id="liw-max" min="3" step="1"></label>
+          <label>Long break every <input type="number" id="liw-every" min="2" step="1"></label>
+          <label>Max per session <input type="number" id="liw-cap" min="1" step="1"></label>
+        </details>
+        <p id="liw-note">Messaging is slower-paced than withdrawing on purpose. Keep batches small.</p>
+      </div>
+    `;
+    document.body.appendChild(panel);
+
+    panel.querySelector("#liw-scan").addEventListener("click", scan);
+    panel.querySelector("#liw-process").addEventListener("click", process);
+    panel.querySelector("#liw-stop").addEventListener("click", () => {
+      stopRequested = true;
+      setStatus("Stopping after current item…");
+    });
+    panel.querySelector("#liw-all").addEventListener("change", (e) => {
+      scanned.forEach((s) => (s.selected = e.target.checked));
+      renderRows();
+    });
+    panel.querySelector("#liw-collapse").addEventListener("click", () =>
+      panel.classList.toggle("liw-collapsed")
+    );
+
+    // template fields
+    const tplBind = (key) => {
+      const el = panel.querySelector("#liw-tpl-" + key);
+      el.value = templates[key];
+      el.addEventListener("input", () => {
+        templates[key] = el.value;
+        save();
+      });
+    };
+    ["newJob", "anniversary", "birthday", "default"].forEach(tplBind);
+
+    const appendEl = panel.querySelector("#liw-append");
+    appendEl.value = appendText;
+    appendEl.addEventListener("input", () => {
+      appendText = appendEl.value;
+      save();
+    });
+
+    const secondEl = panel.querySelector("#liw-second");
+    secondEl.checked = sendSecond;
+    secondEl.addEventListener("change", () => {
+      sendSecond = secondEl.checked;
+      save();
+    });
+
+    const sugEl = panel.querySelector("#liw-suggested");
+    sugEl.checked = useSuggested;
+    sugEl.addEventListener("change", () => {
+      useSuggested = sugEl.checked;
+      save();
+    });
+
+    // timing fields
+    const numBind = (id, key, mult = 1) => {
+      const el = panel.querySelector(id);
+      el.value = cfg[key] / mult;
+      el.addEventListener("change", () => {
+        const v = parseFloat(el.value);
+        if (!isNaN(v)) cfg[key] = v * mult;
+        save();
+      });
+    };
+    numBind("#liw-min", "minDelayMs", 1000);
+    numBind("#liw-max", "maxDelayMs", 1000);
+    numBind("#liw-every", "longRestEvery", 1);
+    numBind("#liw-cap", "maxPerSession", 1);
+  }
+
+  function renderRows() {
+    const listEl = panel.querySelector("#liw-list");
+    listEl.innerHTML = "";
+    scanned.forEach((s) => {
+      const row = document.createElement("label");
+      row.className = "liw-row liw-row-cu";
+      row.dataset.id = s.id;
+      row.innerHTML = `
+        <input type="checkbox" ${s.selected ? "checked" : ""}>
+        <span class="liw-name"></span>
+        <span class="liw-type"></span>
+        <span class="liw-state"></span>
+        <span class="liw-event"></span>
+        <span class="liw-msg"></span>
+      `;
+      row.querySelector(".liw-name").textContent = s.name;
+      row.querySelector(".liw-type").textContent = TYPE_LABEL[s.type];
+      row.querySelector(".liw-type").classList.add("liw-type-" + s.type);
+      row.querySelector(".liw-event").textContent = s.eventText;
+      row.querySelector("input").addEventListener("change", (e) => {
+        s.selected = e.target.checked;
+        updateCount();
+      });
+      row.addEventListener("mouseenter", () => {
+        if (s.cardEl) s.cardEl.style.outline = "2px solid #0a66c2";
+      });
+      row.addEventListener("mouseleave", () => {
+        if (s.cardEl) s.cardEl.style.outline = "";
+      });
+      listEl.appendChild(row);
+    });
+    updateCount();
+  }
+
+  function updateCount() {
+    const n = scanned.filter((s) => s.selected).length;
+    panel.querySelector("#liw-count").textContent = `${n} selected`;
+  }
+
+  function markRow(id, state, message) {
+    const row = panel.querySelector(`.liw-row[data-id="${id}"]`);
+    if (!row) return;
+    row.querySelector(".liw-state").textContent =
+      { working: "⏳", done: "✓", error: "⚠" }[state] || "";
+    const msgEl = row.querySelector(".liw-msg");
+    if (msgEl) msgEl.textContent = message || "";
+    row.className = "liw-row liw-row-cu liw-" + state;
+  }
+
+  function setStatus(msg) {
+    const el = panel.querySelector("#liw-status");
+    if (el) el.textContent = msg;
+  }
+
+  function setRunningUI(on) {
+    panel.querySelector("#liw-process").disabled = on;
+    panel.querySelector("#liw-scan").disabled = on;
+    panel.querySelector("#liw-stop").disabled = !on;
+  }
+
+  // ---- persistence -----------------------------------------------------
+  function save() {
+    try {
+      chrome.storage?.local.set({
+        cuCfg: cfg,
+        cuTemplates: templates,
+        cuAppend: appendText,
+        cuSuggested: useSuggested,
+        cuSecond: sendSecond,
+      });
+    } catch (_) {}
+  }
+  function load(cb) {
+    try {
+      chrome.storage?.local.get(
+        ["cuCfg", "cuTemplates", "cuAppend", "cuSuggested", "cuSecond"],
+        (r) => {
+          if (r.cuCfg) cfg = { ...DEFAULTS, ...r.cuCfg };
+          if (r.cuTemplates) templates = { ...TEMPLATE_DEFAULTS, ...r.cuTemplates };
+          if (typeof r.cuAppend === "string") appendText = r.cuAppend;
+          if (typeof r.cuSuggested === "boolean") useSuggested = r.cuSuggested;
+          if (typeof r.cuSecond === "boolean") sendSecond = r.cuSecond;
+          cb();
+        }
+      );
+    } catch (_) {
+      cb();
+    }
+  }
+
+  load(() => buildPanel());
+})();
