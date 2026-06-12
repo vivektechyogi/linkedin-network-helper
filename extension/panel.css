@@ -232,3 +232,43 @@
   color: #1d2226;
   margin: 6px 0;
 }
+
+/* ---- connections exporter ---- */
+#lc-countbar {
+  font-size: 12px;
+  font-weight: 600;
+  color: #0a66c2;
+  margin-bottom: 6px;
+}
+#lc-list {
+  max-height: 46vh;
+  overflow-y: auto;
+  border: 1px solid #eaeef1;
+  border-radius: 6px;
+}
+#lc-list:empty { display: none; }
+.lc-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #f0f3f5;
+}
+.lc-row:last-child { border-bottom: none; }
+.lc-name {
+  font-weight: 600;
+  color: #0a66c2;
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lc-name:hover { text-decoration: underline; }
+.lc-head {
+  font-size: 11px;
+  color: #1d2226;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lc-date { font-size: 10px; color: #56687a; }

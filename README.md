@@ -20,12 +20,13 @@
 
 **LinkedIn Network Helper** is a free, open-source [Manifest V3](https://developer.chrome.com/docs/extensions/mv3/intro/) Chrome extension that automates two of the most tedious LinkedIn networking chores — **without looking like a bot**. It runs entirely in your own browser, on pages you're already logged into. **Nothing is ever sent to any server.**
 
-It bundles **two tools**:
+It bundles **three tools**:
 
 | Tool | What it does |
 |---|---|
 | 🧹 **Invitation Withdrawer** | Scan your *sent* invitations, filter by age (1 week → 5 months), and **bulk-withdraw** the ones you select. |
 | 🎉 **Catch-up Messenger** | Scan your *Catch-up* page and send **personalized congrats messages** (new job / work anniversary / birthday) using per-event templates. |
+| 📇 **Connections Exporter** | Auto-scroll your entire *Connections* list and **export to CSV / Excel** — name, headline, profile link, profile image URL, and connected-on date. Read-only. |
 
 Both tools mimic real human behavior — randomized delays, realistic pointer clicks, longer rest breaks, and per-session caps — to **reduce the chance LinkedIn flags your account as automated.**
 
@@ -91,6 +92,20 @@ LinkedIn paginates this page, so the flow is: **Scan → Process → next page �
 
 ---
 
+## 📇 Tool 3 — Connections Exporter
+
+**Page:** `https://www.linkedin.com/mynetwork/invite-connect/connections/`
+
+1. Click **Start** — the tool auto-scrolls your connections list, harvesting each person as they render (the list is virtualized, so it captures during the scroll, not at the end).
+2. The captured list appears **live in the panel** with a running count.
+3. Click **Stop** anytime, then **Save as CSV** or **Save as Excel** (`.xls`).
+
+**Exported columns:** Name · Headline · Connected On · Profile URL · Image URL · Profile URN.
+
+This tool is **read-only** — it only scrolls and reads the page, never clicking message/connect/withdraw. Large networks take a while; keep the tab focused while it runs. _Tip:_ LinkedIn's official **"Get a copy of your data"** export also gives emails for connections who allow it — combine the two for a richer sheet.
+
+---
+
 ## 🛡️ Staying under the radar (please read)
 
 Automating *write* actions on LinkedIn (withdrawing, messaging) can get accounts rate-limited or restricted. This extension is built to look human, but **nothing can guarantee** you won't be flagged. Best practices:
@@ -118,11 +133,12 @@ All extension code lives in the **`extension/`** folder:
 
 | File | Purpose |
 |---|---|
-| `extension/manifest.json` | MV3 manifest; content scripts scoped to the two LinkedIn pages |
+| `extension/manifest.json` | MV3 manifest; content scripts scoped to the three LinkedIn pages |
 | `extension/content.js` | Invitation Withdrawer panel + logic |
 | `extension/catchup.js` | Catch-up Messenger panel + logic |
+| `extension/connections.js` | Connections Exporter panel + logic |
 | `extension/panel.css` | Shared panel styling |
-| `extension/popup.html` / `extension/popup.js` | Toolbar popup that opens either page |
+| `extension/popup.html` / `extension/popup.js` | Toolbar popup that opens any tool's page |
 
 ---
 

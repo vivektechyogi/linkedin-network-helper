@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "LinkedIn Network Helper",
-  "version": "1.1.0",
-  "description": "Withdraw sent invitations and send catch-up messages, with human-like timing.",
+  "version": "1.2.0",
+  "description": "Withdraw sent invitations, send catch-up messages, and export your connections — with human-like timing.",
   "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": ["https://www.linkedin.com/*"],
   "action": {
@@ -19,6 +19,12 @@
     {
       "matches": ["https://www.linkedin.com/mynetwork/catch-up*"],
       "js": ["catchup.js"],
+      "css": ["panel.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.linkedin.com/mynetwork/invite-connect/connections*"],
+      "js": ["connections.js"],
       "css": ["panel.css"],
       "run_at": "document_idle"
     }
