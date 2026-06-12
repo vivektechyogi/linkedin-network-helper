@@ -35,12 +35,17 @@ Both tools mimic real human behavior — randomized delays, realistic pointer cl
 
 > _Add your PNGs to the `screenshots/` folder to make these render._
 
-### Invitation Withdrawer
+### The extension
+<p align="center"><img src="screenshots/extension.png" alt="LinkedIn Network Helper Chrome extension popup" width="300"></p>
+
+One click opens either tool's LinkedIn page; the control panel appears right on the page.
+
+### Tool 1 — Invitation Withdrawer
 <p align="center"><img src="screenshots/withdrawer.png" alt="LinkedIn Invitation Withdrawer panel" width="380"></p>
 
 Scan the Sent-invitations page, select by age, and withdraw in bulk.
 
-### Catch-up Messenger
+### Tool 2 — Catch-up Messenger
 <p align="center"><img src="screenshots/catchup.png" alt="LinkedIn Catch-up Messenger panel" width="380"></p>
 
 Pick who to congratulate, set per-event message templates, and send — with an optional follow-up note.
