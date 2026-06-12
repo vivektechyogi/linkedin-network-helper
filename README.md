@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Manifest-V3-1a73e8" alt="Manifest V3">
   <img src="https://img.shields.io/badge/Price-Free-2ea44f" alt="Free">
   <img src="https://img.shields.io/badge/License-MIT-blue" alt="MIT License">
-  <a href="https://www.paypal.me/YOUR_PAYPAL_HANDLE">
+  <a href="https://www.paypal.me/viveklalan">
     <img src="https://img.shields.io/badge/Donate-PayPal-00457C?logo=paypal&logoColor=white" alt="Donate via PayPal">
   </a>
 </p>
@@ -124,12 +124,12 @@ Use at your own discretion. This is a personal productivity tool, not an affilia
 This extension is **100% free and open source**. If it saved you time and you'd like to say thanks, a small tip is hugely appreciated and keeps it maintained:
 
 <p align="center">
-  <a href="https://www.paypal.me/YOUR_PAYPAL_HANDLE">
+  <a href="https://www.paypal.me/viveklalan">
     <img src="https://img.shields.io/badge/☕_Buy_me_a_coffee-PayPal-00457C?logo=paypal&logoColor=white&style=for-the-badge" alt="Donate via PayPal">
   </a>
 </p>
 
-> 👉 **PayPal:** https://www.paypal.me/YOUR_PAYPAL_HANDLE
+> 👉 **PayPal:** https://www.paypal.me/viveklalan
 
 ⭐ **Starring the repo** also helps others discover it — and costs nothing!
 
