@@ -37,7 +37,7 @@ All three tools mimic real human behavior — randomized delays, realistic point
 > _Add your PNGs to the `screenshots/` folder to make these render._
 
 ### The extension
-<p align="center"><img src="screenshots/extension.png" alt="LinkedIn Network Helper Chrome extension popup" width="300"></p>
+<p align="center"><img src="screenshots/extension_tools_list.png" alt="LinkedIn Network Helper Chrome extension popup" width="300"></p>
 
 One click opens either tool's LinkedIn page; the control panel appears right on the page.
 
