@@ -98,6 +98,47 @@
     return added;
   }
 
+  // ---- scrolling (the list scrolls inside an inner container, not window) --
+  function findScroller() {
+    const rows = findRows();
+    let el = rows.length ? rows[rows.length - 1] : document.body;
+    while (el && el !== document.body && el !== document.documentElement) {
+      const oy = getComputedStyle(el).overflowY;
+      if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 40)
+        return el;
+      el = el.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
+  // Advance the list by ~one viewport. scrollIntoView on the last rendered row
+  // reliably triggers the next lazy batch regardless of which element scrolls.
+  function scrollStep() {
+    const rows = findRows();
+    const lastRow = rows[rows.length - 1];
+    if (lastRow) {
+      try {
+        lastRow.scrollIntoView({ block: "end" });
+      } catch (_) {}
+    }
+    const sc = findScroller();
+    const step = (sc.clientHeight || window.innerHeight) * (0.6 + Math.random() * 0.3);
+    sc.scrollTop += step;
+    window.scrollBy(0, step);
+  }
+
+  function scrollToBottom() {
+    const sc = findScroller();
+    sc.scrollTop = sc.scrollHeight;
+    window.scrollTo(0, document.body.scrollHeight);
+    const rows = findRows();
+    if (rows.length) {
+      try {
+        rows[rows.length - 1].scrollIntoView({ block: "end" });
+      } catch (_) {}
+    }
+  }
+
   function totalFromHeader() {
     const p = [...document.querySelectorAll("p")].find((el) =>
       /[\d,]+\s+connections?/i.test(el.textContent)
@@ -123,7 +164,7 @@
 
     while (!stopRequested) {
       // human-like scroll: most of a viewport, with jitter
-      window.scrollBy(0, Math.round(window.innerHeight * (0.65 + Math.random() * 0.3)));
+      scrollStep();
       await sleep(rand(650, 1400));
       harvest();
       renderList();
@@ -134,7 +175,7 @@
       if (collected.size === last) {
         stable++;
         // nudge all the way to the bottom to force the next lazy batch
-        window.scrollTo(0, document.body.scrollHeight);
+        scrollToBottom();
         await sleep(rand(900, 1800));
         harvest();
         if (collected.size === last && stable >= 5) break; // truly at the end
