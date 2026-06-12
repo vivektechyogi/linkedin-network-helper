@@ -52,7 +52,7 @@ Pick who to congratulate, set per-event message templates, and send — with an 
 1. **Download / clone** this repo.
 2. Open `chrome://extensions` in Chrome (or any Chromium browser — Edge, Brave, Arc).
 3. Turn on **Developer mode** (top-right).
-4. Click **Load unpacked** and select the project folder.
+4. Click **Load unpacked** and select the **`extension/`** folder (not the repo root).
 5. Pin the extension. Click its icon to jump to either tool's page.
 
 > Not on the Chrome Web Store — install it unpacked (above). It's free and the full source is right here.
@@ -109,13 +109,15 @@ Use at your own discretion. This is a personal productivity tool, not an affilia
 
 ### Files
 
+All extension code lives in the **`extension/`** folder:
+
 | File | Purpose |
 |---|---|
-| `manifest.json` | MV3 manifest; content scripts scoped to the two LinkedIn pages |
-| `content.js` | Invitation Withdrawer panel + logic |
-| `catchup.js` | Catch-up Messenger panel + logic |
-| `panel.css` | Shared panel styling |
-| `popup.html` / `popup.js` | Toolbar popup that opens either page |
+| `extension/manifest.json` | MV3 manifest; content scripts scoped to the two LinkedIn pages |
+| `extension/content.js` | Invitation Withdrawer panel + logic |
+| `extension/catchup.js` | Catch-up Messenger panel + logic |
+| `extension/panel.css` | Shared panel styling |
+| `extension/popup.html` / `extension/popup.js` | Toolbar popup that opens either page |
 
 ---
 
