@@ -1,7 +1,7 @@
 <h1 align="center">LinkedIn Network Helper</h1>
 
 <p align="center">
-  <b>A free Chrome extension to bulk-withdraw sent LinkedIn invitations and send catch-up congrats messages — with human-like timing.</b>
+  <b>A free Chrome extension to bulk-withdraw sent LinkedIn invitations, send catch-up congrats messages, and export your connections to CSV/Excel — with human-like timing.</b>
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
 
 ## ✨ What it does
 
-**LinkedIn Network Helper** is a free, open-source [Manifest V3](https://developer.chrome.com/docs/extensions/mv3/intro/) Chrome extension that automates two of the most tedious LinkedIn networking chores — **without looking like a bot**. It runs entirely in your own browser, on pages you're already logged into. **Nothing is ever sent to any server.**
+**LinkedIn Network Helper** is a free, open-source [Manifest V3](https://developer.chrome.com/docs/extensions/mv3/intro/) Chrome extension that automates three of the most tedious LinkedIn networking chores — **without looking like a bot**. It runs entirely in your own browser, on pages you're already logged into. **Nothing is ever sent to any server.**
 
 It bundles **three tools**:
 
@@ -28,7 +28,7 @@ It bundles **three tools**:
 | 🎉 **Catch-up Messenger** | Scan your *Catch-up* page and send **personalized congrats messages** (new job / work anniversary / birthday) using per-event templates. |
 | 📇 **Connections Exporter** | Auto-scroll your entire *Connections* list and **export to CSV / Excel** — name, headline, profile link, profile image URL, and connected-on date. Read-only. |
 
-Both tools mimic real human behavior — randomized delays, realistic pointer clicks, longer rest breaks, and per-session caps — to **reduce the chance LinkedIn flags your account as automated.**
+All three tools mimic real human behavior — randomized delays, realistic pointer clicks, longer rest breaks, and per-session caps — to **reduce the chance LinkedIn flags your account as automated.**
 
 ---
 
@@ -51,6 +51,11 @@ Scan the Sent-invitations page, select by age, and withdraw in bulk.
 
 Pick who to congratulate, set per-event message templates, and send — with an optional follow-up note.
 
+### Tool 3 — Connections Exporter
+<p align="center"><img src="screenshots/connections.png" alt="LinkedIn Connections Exporter panel" width="380"></p>
+
+Auto-scroll your whole connections list, watch it fill live, then save as CSV or Excel.
+
 ---
 
 ## 🚀 Install (unpacked)
@@ -59,7 +64,7 @@ Pick who to congratulate, set per-event message templates, and send — with an 
 2. Open `chrome://extensions` in Chrome (or any Chromium browser — Edge, Brave, Arc).
 3. Turn on **Developer mode** (top-right).
 4. Click **Load unpacked** and select the **`extension/`** folder (not the repo root).
-5. Pin the extension. Click its icon to jump to either tool's page.
+5. Pin the extension. Click its icon to jump to any tool's page.
 
 > Not on the Chrome Web Store — install it unpacked (above). It's free and the full source is right here.
 
@@ -160,7 +165,7 @@ This extension is **100% free and open source**. If it saved you time and you'd 
 
 ## 🤝 Contributing
 
-Issues and PRs welcome. If LinkedIn changes its markup and a **Scan** stops finding things, the fix is usually in the relevant `find*` function in `content.js` / `catchup.js`.
+Issues and PRs welcome. If LinkedIn changes its markup and a **Scan** stops finding things, the fix is usually in the relevant `find*` function in `content.js` / `catchup.js` / `connections.js`.
 
 ---
 
@@ -172,4 +177,4 @@ MIT — see [LICENSE](LICENSE). Free to use, modify, and share.
 
 ## 🔎 Keywords
 
-LinkedIn Chrome extension · LinkedIn automation tool · bulk withdraw LinkedIn invitations · withdraw sent connection requests · cancel pending LinkedIn invites · LinkedIn invitation manager · LinkedIn catch-up messages · auto congratulate LinkedIn · LinkedIn networking tool · LinkedIn outreach automation · LinkedIn message templates · work anniversary message · happy birthday LinkedIn automation · new job congrats message · LinkedIn productivity extension · free LinkedIn tool · LinkedIn bot (human-like, anti-detection) · Manifest V3 extension · LinkedIn connection management · LinkedIn lead generation helper
+LinkedIn Chrome extension · LinkedIn automation tool · bulk withdraw LinkedIn invitations · withdraw sent connection requests · cancel pending LinkedIn invites · LinkedIn invitation manager · LinkedIn catch-up messages · auto congratulate LinkedIn · LinkedIn networking tool · LinkedIn outreach automation · LinkedIn message templates · work anniversary message · happy birthday LinkedIn automation · new job congrats message · export LinkedIn connections · LinkedIn connections to CSV · LinkedIn connections to Excel · scrape LinkedIn connections · download LinkedIn contacts · LinkedIn productivity extension · free LinkedIn tool · LinkedIn bot (human-like, anti-detection) · Manifest V3 extension · LinkedIn connection management · LinkedIn lead generation helper
