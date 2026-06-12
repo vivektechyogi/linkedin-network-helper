@@ -98,22 +98,45 @@
     return added;
   }
 
-  // ---- scrolling (the list scrolls inside an inner container, not window) --
-  function findScroller() {
-    const rows = findRows();
-    let el = rows.length ? rows[rows.length - 1] : document.body;
-    while (el && el !== document.body && el !== document.documentElement) {
-      const oy = getComputedStyle(el).overflowY;
-      if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 40)
-        return el;
-      el = el.parentElement;
+  // ---- scrolling -------------------------------------------------------
+  // The list scrolls inside an inner SDUI container, and which element actually
+  // owns the scroll varies. So gather every plausible scroller and drive them
+  // all — whichever really scrolls will move.
+  function getScrollers() {
+    const out = [];
+    const add = (el) => {
+      if (el && !out.includes(el)) out.push(el);
+    };
+    add(document.querySelector("#workspace"));
+    add(document.querySelector("[data-sdui-screen]"));
+    const lazy = document.querySelector(
+      "[data-component-type='LazyColumn'], [data-testid='lazy-column']"
+    );
+    if (lazy) {
+      let el = lazy;
+      while (el && el !== document.documentElement) {
+        const oy = getComputedStyle(el).overflowY;
+        if (oy === "auto" || oy === "scroll") add(el);
+        el = el.parentElement;
+      }
     }
-    return document.scrollingElement || document.documentElement;
+    add(document.scrollingElement);
+    add(document.documentElement);
+    add(document.body);
+    return out.filter(Boolean);
   }
 
-  // Advance the list by ~one viewport. scrollIntoView on the last rendered row
-  // reliably triggers the next lazy batch regardless of which element scrolls.
   function scrollStep() {
+    const amount = Math.round(window.innerHeight * (0.6 + Math.random() * 0.3));
+    let moved = false;
+    getScrollers().forEach((sc) => {
+      const before = sc.scrollTop;
+      sc.scrollTop = before + amount;
+      if (sc.scrollTop !== before) moved = true;
+    });
+    window.scrollBy(0, amount);
+    // Fallback / reinforcement: bring the last rendered row into view, which
+    // forces the virtualized list to render the next batch.
     const rows = findRows();
     const lastRow = rows[rows.length - 1];
     if (lastRow) {
@@ -121,15 +144,15 @@
         lastRow.scrollIntoView({ block: "end" });
       } catch (_) {}
     }
-    const sc = findScroller();
-    const step = (sc.clientHeight || window.innerHeight) * (0.6 + Math.random() * 0.3);
-    sc.scrollTop += step;
-    window.scrollBy(0, step);
+    return moved;
   }
 
   function scrollToBottom() {
-    const sc = findScroller();
-    sc.scrollTop = sc.scrollHeight;
+    getScrollers().forEach((sc) => {
+      try {
+        sc.scrollTop = sc.scrollHeight;
+      } catch (_) {}
+    });
     window.scrollTo(0, document.body.scrollHeight);
     const rows = findRows();
     if (rows.length) {
