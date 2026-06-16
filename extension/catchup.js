@@ -419,31 +419,41 @@
   // Read who the currently-open composer is addressed to, so we never send to
   // the wrong person if an old overlay is still around.
   function getComposerRecipient() {
-    const pill = deepQueryAll(
-      "[class*='added-recipients'] .artdeco-pill__text, .artdeco-pill__text"
-    )[0];
+    // Scope the search to the OPEN composer only. Searching the whole page can
+    // pick up unrelated pills/titles elsewhere — e.g. an ad's
+    // "Why am I seeing this ad?" pill — and falsely flag a wrong recipient.
+    const editor = findComposerEditor();
+    const scope =
+      (editor && composerContainerOf(editor)) ||
+      messageDialog() ||
+      deepQueryAll("[class*='msg-overlay']")[0] ||
+      null;
+    if (!scope) return "";
+    const q = (sel) => {
+      try {
+        return scope.querySelector(sel);
+      } catch (_) {
+        return null;
+      }
+    };
+
+    const pill = q("[class*='added-recipients'] .artdeco-pill__text") || q(".artdeco-pill__text");
     if (pill) return norm(pill.textContent);
-    const card = deepQueryAll(
-      ".msg-s-profile-card .artdeco-entity-lockup__title, .artdeco-entity-lockup__title"
-    )[0];
+    const card =
+      q(".msg-s-profile-card .artdeco-entity-lockup__title") ||
+      q(".artdeco-entity-lockup__title");
     if (card) return norm(card.textContent);
-    const title = deepQueryAll(".msg-overlay-bubble-header__title")[0];
+    const title = q(".msg-overlay-bubble-header__title");
     if (title) {
       const t = norm(title.textContent);
       if (t && !/new message/i.test(t)) return t;
     }
     // SDUI "Send message" modal: the recipient name is the first paragraph in
     // the dialog body (the event description follows in a second paragraph).
-    const modal = deepQueryAll(
-      "[data-sdui-screen*='Message'], [data-testid='dialog-content']"
-    )[0];
-    if (modal) {
-      const p = modal.querySelector("p");
-      if (p) {
-        const t = norm(p.textContent);
-        if (t && !/^send message$/i.test(t) && !/^write a message/i.test(t))
-          return t;
-      }
+    const p = q("p");
+    if (p) {
+      const t = norm(p.textContent);
+      if (t && !/^send message$/i.test(t) && !/^write a message/i.test(t)) return t;
     }
     return "";
   }
