@@ -363,10 +363,25 @@
         .sort((a, b) => b[1] - a[1])
         .map(([b]) => b)[0];
     };
-    const sendBtn = findSend(scope) || findSend(document);
+    // The SDUI "Send message" modal's button carries a stable componentkey and
+    // is briefly DISABLED right after we fill the text (until the framework
+    // processes the input event) — so poll for an ENABLED Send control.
+    const directSend = () =>
+      deepQueryAll("[componentkey^='referralSendButton']").find(
+        (b) => b.tagName === "BUTTON" && !b.disabled && b.getAttribute("aria-disabled") !== "true"
+      );
+    let sendBtn = null;
+    const deadline = Date.now() + 3500;
+    while (Date.now() < deadline) {
+      sendBtn = directSend() || findSend(scope) || findSend(document);
+      if (sendBtn) break;
+      await sleep(250);
+    }
     if (sendBtn) {
       await humanClick(sendBtn);
-      await sleep(rand(700, 1100));
+      await sleep(rand(900, 1500));
+      if (confirmedSent(container)) return true;
+      await sleep(rand(900, 1600)); // network/close can lag
       if (confirmedSent(container)) return true;
     }
 
