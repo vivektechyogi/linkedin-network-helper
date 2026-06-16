@@ -26,7 +26,7 @@ It bundles **three tools**:
 |---|---|
 | 🧹 **Invitation Withdrawer** | Scan your *sent* invitations, filter by age (1 week → 5 months), and **bulk-withdraw** the ones you select. |
 | 🎉 **Catch-up Messenger** | Scan your *Catch-up* page and send **personalized congrats messages** (new job / work anniversary / birthday) using per-event templates. |
-| 📇 **Connections Exporter** | Auto-scroll your entire *Connections* list and **export to CSV / Excel** — name, headline, profile link, profile image URL, and connected-on date. Read-only. |
+| 📇 **Connections Exporter & Remover** | Auto-scroll your entire *Connections* list and **export to CSV / Excel** (name, headline, profile link, image URL, connected-on date), and optionally **bulk-remove** selected connections — human-paced, with a per-session cap. |
 
 All three tools mimic real human behavior — randomized delays, realistic pointer clicks, longer rest breaks, and per-session caps — to **reduce the chance LinkedIn flags your account as automated.**
 
@@ -97,17 +97,25 @@ LinkedIn paginates this page, so the flow is: **Scan → Process → next page �
 
 ---
 
-## 📇 Tool 3 — Connections Exporter
+## 📇 Tool 3 — Connections Exporter & Remover
 
 **Page:** `https://www.linkedin.com/mynetwork/invite-connect/connections/`
 
+**Export:**
 1. Click **Start** — the tool auto-scrolls your connections list, harvesting each person as they render (the list is virtualized, so it captures during the scroll, not at the end).
 2. The captured list appears **live in the panel** with a running count.
 3. Click **Stop** anytime, then **Save as CSV** or **Save as Excel** (`.xls`).
 
 **Exported columns:** Name · Headline · Connected On · Profile URL · Image URL · Profile URN.
 
-This tool is **read-only** — it only scrolls and reads the page, never clicking message/connect/withdraw. Large networks take a while; keep the tab focused while it runs. _Tip:_ LinkedIn's official **"Get a copy of your data"** export also gives emails for connections who allow it — combine the two for a richer sheet.
+**Remove connections (optional):**
+1. After capturing, **tick** the connections you want to remove (or use **shown** to select all visible).
+2. Click **Remove selected** and confirm the prompt.
+3. Each is removed one-by-one — open the ⋯ menu → *Remove connection* → confirm — with **randomized 4–9s delays**, a longer break every 6, and a **40/session cap**. A **name-match check** on the confirm dialog ensures it never removes the wrong person.
+
+> ⚠️ **Removal is permanent** — LinkedIn cannot undo it. Start with one or two to confirm the flow.
+
+_Tip:_ LinkedIn's official **"Get a copy of your data"** export also gives emails for connections who allow it — combine the two for a richer sheet.
 
 ---
 
