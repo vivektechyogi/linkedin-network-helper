@@ -337,13 +337,32 @@
   async function sendMessage(editor) {
     const container = composerContainerOf(editor);
 
-    // 1) An explicit Send button, if this state has one. Prefer one inside the
-    //    composer container (the SDUI modal's Send), then fall back to any.
+    // 1) An explicit Send button/control, if this state has one. Cover plain
+    //    <button>s, role="button" divs, and icon buttons labelled via aria —
+    //    the SDUI "Send message" modal uses one of these. Prefer a control
+    //    inside the composer/dialog, and an exact "send" over a "send …" match.
     const scope = container && document.contains(container) ? container : document;
-    const findSend = (root) =>
-      deepQueryAll("button.msg-form__send-button, form.msg-form button, button")
-        .filter((b) => root === document || root.contains(b))
-        .find((b) => norm(b.textContent).toLowerCase() === "send" && !b.disabled);
+    const isSendLabel = (s) => s === "send" || /^send( message)?$/.test(s);
+    const findSend = (root) => {
+      const cands = deepQueryAll("button, [role='button'], a[role='button']").filter(
+        (b) =>
+          (root === document || (root.contains && root.contains(b))) &&
+          !b.disabled &&
+          b.getAttribute("aria-disabled") !== "true"
+      );
+      const score = (b) => {
+        const t = norm(b.textContent).toLowerCase();
+        const aria = norm(b.getAttribute("aria-label") || "").toLowerCase();
+        if (t === "send" || aria === "send") return 2;
+        if (isSendLabel(t) || isSendLabel(aria)) return 1;
+        return 0;
+      };
+      return cands
+        .map((b) => [b, score(b)])
+        .filter(([, s]) => s > 0)
+        .sort((a, b) => b[1] - a[1])
+        .map(([b]) => b)[0];
+    };
     const sendBtn = findSend(scope) || findSend(document);
     if (sendBtn) {
       await humanClick(sendBtn);
@@ -374,6 +393,25 @@
       await sleep(rand(700, 1100));
       if (confirmedSent(container)) return true;
     }
+
+    // Still here → couldn't submit. Dump the candidate buttons so we can see
+    // what the Send control actually looks like.
+    try {
+      const root = container && document.contains(container) ? container : messageDialog() || document;
+      const btns = deepQueryAll("button, [role='button']").filter(
+        (b) => root === document || (root.contains && root.contains(b))
+      );
+      console.log("[LI Catchup] send failed — buttons in composer/dialog:", btns.length);
+      btns.forEach((b, i) =>
+        console.log(
+          `  #${i}`,
+          b.tagName,
+          "| text=", norm(b.textContent).slice(0, 30),
+          "| aria=", b.getAttribute("aria-label"),
+          "| disabled=", b.disabled || b.getAttribute("aria-disabled")
+        )
+      );
+    } catch (_) {}
     return false;
   }
 
