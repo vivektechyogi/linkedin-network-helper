@@ -196,6 +196,58 @@
     return (el.className && el.className.toString && el.className.toString()) || "";
   }
 
+  const isFieldEditor = (el) =>
+    !!el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT");
+
+  // Read the live text from any editor type. A <textarea>/<input> keeps its
+  // current text in .value (its .textContent is only the original default), so
+  // never trust textContent for those.
+  function editorValue(el) {
+    if (!el) return "";
+    return isFieldEditor(el) ? el.value || "" : el.textContent || "";
+  }
+
+  // Set a textarea/input value the React/SDUI-friendly way: go through the
+  // native value setter so the framework's input listener actually fires.
+  function setNativeValue(el, value) {
+    const proto =
+      el.tagName === "TEXTAREA"
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+    const desc = Object.getOwnPropertyDescriptor(proto, "value");
+    if (desc && desc.set) desc.set.call(el, value);
+    else el.value = value;
+  }
+
+  // The SDUI "Send message" modal, if one is open. Scoped to the message modal
+  // specifically (a dialog carrying a Message screen or containing an editor)
+  // so we never act on an unrelated dialog on the page.
+  function messageDialog() {
+    const byScreen = document.querySelector("[data-sdui-screen*='Message']");
+    if (byScreen) return byScreen.closest("[role='dialog']") || byScreen;
+    return (
+      deepQueryAll("[role='dialog'], [data-testid='dialog-content']").find(
+        (d) =>
+          d.querySelector &&
+          d.querySelector("textarea, [contenteditable], [role='textbox']")
+      ) || null
+    );
+  }
+
+  // The enclosing composer chrome (messaging overlay form, or the SDUI "Send
+  // message" modal). When this is torn out of the DOM, the message has gone.
+  function composerContainerOf(editor) {
+    if (!editor) return null;
+    return (
+      (editor.closest &&
+        editor.closest(
+          "form.msg-form, [class*='msg-overlay'], [data-testid='dialog-content'], [role='dialog'], [data-sdui-screen*='Message']"
+        )) ||
+      editor.parentElement ||
+      null
+    );
+  }
+
   // The messaging overlay's editable box. Score candidates so we pick the real
   // message editor even as LinkedIn varies its markup.
   function findComposerEditor() {
@@ -267,24 +319,36 @@
     el.dispatchEvent(makeEnter("keyup"));
   }
 
-  // Confirm a send by re-querying a FRESH editor (the old node detaches on
-  // re-render) and checking it's now empty. A stale reference lies.
-  function confirmedSent() {
+  // Confirm a send. Two valid signals, depending on the UI flow:
+  //  - the composer we typed into was removed from the DOM (the SDUI "Send
+  //    message" modal closes itself on send), or
+  //  - a FRESH editor (the old node detaches on re-render) is now empty (the
+  //    messaging overlay stays open with an emptied box).
+  // A stale reference lies, so always re-query.
+  function confirmedSent(container) {
+    if (container && !document.contains(container)) return true;
     const ed = findComposerEditor();
-    return !!ed && norm(ed.textContent).length === 0;
+    if (!ed) return true; // editor gone entirely → message left / box closed
+    return norm(editorValue(ed)).length === 0;
   }
 
   // Try several ways to actually submit, confirming after each. Returns true
   // only when the editor is confirmed empty (message left the box).
   async function sendMessage(editor) {
-    // 1) An explicit Send button, if this state has one.
-    const sendBtn = deepQueryAll(
-      "button.msg-form__send-button, form.msg-form button, button"
-    ).find((b) => norm(b.textContent).toLowerCase() === "send" && !b.disabled);
+    const container = composerContainerOf(editor);
+
+    // 1) An explicit Send button, if this state has one. Prefer one inside the
+    //    composer container (the SDUI modal's Send), then fall back to any.
+    const scope = container && document.contains(container) ? container : document;
+    const findSend = (root) =>
+      deepQueryAll("button.msg-form__send-button, form.msg-form button, button")
+        .filter((b) => root === document || root.contains(b))
+        .find((b) => norm(b.textContent).toLowerCase() === "send" && !b.disabled);
+    const sendBtn = findSend(scope) || findSend(document);
     if (sendBtn) {
       await humanClick(sendBtn);
       await sleep(rand(700, 1100));
-      if (confirmedSent()) return true;
+      if (confirmedSent(container)) return true;
     }
 
     // 2) Submit the message form directly (most reliable for Enter-to-send UIs).
@@ -297,17 +361,18 @@
         else form.submit();
       } catch (_) {}
       await sleep(rand(700, 1100));
-      if (confirmedSent()) return true;
+      if (confirmedSent(container)) return true;
     }
 
-    // 3) Enter key on the (freshly found) editor, retried.
+    // 3) Enter key on the (freshly found) editor, retried. (No-op for a plain
+    //    textarea where Enter inserts a newline, but harmless.)
     for (let attempt = 0; attempt < 3; attempt++) {
       const ed = findComposerEditor() || editor;
       ed.focus();
       await sleep(rand(150, 350));
       pressEnter(ed);
       await sleep(rand(700, 1100));
-      if (confirmedSent()) return true;
+      if (confirmedSent(container)) return true;
     }
     return false;
   }
@@ -321,6 +386,9 @@
         const label = norm(c.getAttribute("aria-label") || c.textContent || "").toLowerCase();
         if (/^close your (draft )?conversation/.test(label)) return true;
         if (/^close conversation/.test(label)) return true;
+        // a dismiss/close control on the SDUI "Send message" modal
+        if (/^(close|dismiss|cancel)\b/.test(label) && c.closest("[role='dialog'], [data-testid='dialog-content']"))
+          return true;
         // close-small icon inside a messaging-overlay header control
         const hasCloseIcon =
           c.querySelector &&
@@ -328,16 +396,24 @@
         const cls = clsOf(c);
         return !!hasCloseIcon && /msg-overlay|conversation-bubble/.test(cls);
       });
-      if (!closers.length && !findComposerEditor()) return true;
+      const dialog = messageDialog();
+      if (!closers.length && !dialog && !findComposerEditor()) return true;
       closers.forEach((c) => {
         try {
           c.click();
         } catch (_) {}
       });
+      // The SDUI modal also closes on Escape — use it as a fallback when no
+      // explicit close button was matched.
+      if (!closers.length && dialog) {
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true })
+        );
+      }
       await sleep(450);
-      if (!findComposerEditor()) return true;
+      if (!findComposerEditor() && !messageDialog()) return true;
     }
-    return !findComposerEditor();
+    return !findComposerEditor() && !messageDialog();
   }
 
   // Read who the currently-open composer is addressed to, so we never send to
@@ -355,6 +431,19 @@
     if (title) {
       const t = norm(title.textContent);
       if (t && !/new message/i.test(t)) return t;
+    }
+    // SDUI "Send message" modal: the recipient name is the first paragraph in
+    // the dialog body (the event description follows in a second paragraph).
+    const modal = deepQueryAll(
+      "[data-sdui-screen*='Message'], [data-testid='dialog-content']"
+    )[0];
+    if (modal) {
+      const p = modal.querySelector("p");
+      if (p) {
+        const t = norm(p.textContent);
+        if (t && !/^send message$/i.test(t) && !/^write a message/i.test(t))
+          return t;
+      }
     }
     return "";
   }
@@ -459,7 +548,20 @@
   async function setEditorText(editor, text) {
     editor.focus();
     await sleep(rand(150, 350));
-    // select everything currently in the editor, then overwrite it
+
+    // <textarea>/<input> (the SDUI "Send message" modal): drive the native
+    // value setter so React/SDUI sees the change and enables its Send button.
+    if (isFieldEditor(editor)) {
+      setNativeValue(editor, "");
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      setNativeValue(editor, text);
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      editor.dispatchEvent(new Event("change", { bubbles: true }));
+      await sleep(rand(100, 250));
+      return;
+    }
+
+    // contenteditable (messaging overlay): select all, then overwrite.
     document.execCommand("selectAll", false, null);
     await sleep(40);
     const ok = document.execCommand("insertText", false, text);
@@ -514,7 +616,7 @@
     const deadline = Date.now() + 12000;
     while (Date.now() < deadline) {
       editor = findComposerEditor();
-      if (editor && (!prefill || norm(editor.textContent).length > 0)) break;
+      if (editor && (!prefill || norm(editorValue(editor)).length > 0)) break;
       await sleep(300);
     }
     if (!editor) {
@@ -542,11 +644,11 @@
     // Ensure the editor actually contains our intended message. LinkedIn's URL
     // pre-fill often ignores our appended/custom text, so if what's in the box
     // doesn't match, overwrite it directly.
-    if (norm(editor.textContent) !== norm(msg)) {
+    if (norm(editorValue(editor)) !== norm(msg)) {
       await setEditorText(editor, msg);
       await sleep(rand(400, 900));
     }
-    if (norm(editor.textContent).length === 0)
+    if (norm(editorValue(editor)).length === 0)
       return { ok: false, msg: "Message box opened but stayed empty after typing." };
 
     const sent = await sendMessage(editor);
@@ -568,7 +670,7 @@
       const dl = Date.now() + 8000;
       while (Date.now() < dl) {
         ed2 = findComposerEditor();
-        if (ed2 && norm(ed2.textContent).length === 0) break;
+        if (ed2 && norm(editorValue(ed2)).length === 0) break;
         await sleep(300);
       }
       if (ed2) {
