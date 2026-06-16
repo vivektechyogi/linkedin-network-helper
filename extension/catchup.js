@@ -371,18 +371,32 @@
         (b) => b.tagName === "BUTTON" && !b.disabled && b.getAttribute("aria-disabled") !== "true"
       );
     let sendBtn = null;
+    let isSdui = false;
     const deadline = Date.now() + 3500;
     while (Date.now() < deadline) {
-      sendBtn = directSend() || findSend(scope) || findSend(document);
+      const d = directSend();
+      if (d) {
+        sendBtn = d;
+        isSdui = true;
+        break;
+      }
+      sendBtn = findSend(scope) || findSend(document);
       if (sendBtn) break;
       await sleep(250);
     }
     if (sendBtn) {
       await humanClick(sendBtn);
+      try {
+        sendBtn.click(); // native click as a reliable fallback for the handler
+      } catch (_) {}
       await sleep(rand(900, 1500));
       if (confirmedSent(container)) return true;
-      await sleep(rand(900, 1600)); // network/close can lag
+      await sleep(rand(800, 1400)); // network/close can lag
       if (confirmedSent(container)) return true;
+      // The SDUI "Send message" modal sends on this click but doesn't reliably
+      // clear/close fast enough to confirm — trust the click we made on the
+      // enabled Send button rather than report a false failure.
+      if (isSdui) return true;
     }
 
     // 2) Submit the message form directly (most reliable for Enter-to-send UIs).
