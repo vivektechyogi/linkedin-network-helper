@@ -108,6 +108,8 @@ LinkedIn paginates this page, so the flow is: **Scan → Process → next page �
 
 **Exported columns:** Name · Headline · Connected On · Profile URL · Image URL · Profile URN.
 
+**Filter, sort & search:** above the list you can **search** by name/headline, **filter by year** of connection, and **sort** by newest/oldest or name A–Z/Z–A. CSV/Excel export the **currently filtered & sorted view**, so you can export, say, "everyone I connected with in 2023, A–Z".
+
 **Remove connections (optional):**
 1. After capturing, **tick** the connections you want to remove (or use **shown** to select all visible).
 2. Click **Remove selected** and confirm the prompt.

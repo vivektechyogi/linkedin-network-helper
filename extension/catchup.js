@@ -68,22 +68,42 @@
 
   // ===== SELECTORS (most likely to need tuning) ========================
 
-  // Catch-up action = an <a> linking to /messaging/compose with the suggested
-  // message in the URL body param and aria-label "Message <name>: <body>".
+  // Catch-up action. Historically an <a> linking to /messaging/compose with the
+  // suggested message in the URL body param. On the newer SDUI catch-up page it
+  // is instead a <button> that opens the composer on click. Both carry an
+  // aria-label of the form "Message <name>: <suggested body>".
   function findCardButtons() {
     const out = [];
     const seen = new Set();
+    const consider = (el) => {
+      if (!el || seen.has(el)) return;
+      const aria = norm(el.getAttribute("aria-label"));
+      if (!/^message\s+/i.test(aria)) return;
+      if (el.closest("[role='dialog']")) return;
+      // Old layout: a compose anchor. New layout: a button whose label carries
+      // the suggested text after a colon ("Message Name: Happy birthday!").
+      const isComposeLink =
+        el.tagName === "A" &&
+        /\/messaging\/compose/.test(el.getAttribute("href") || "");
+      const looksLikeCard = /^message\s+.+:/i.test(aria);
+      if (!isComposeLink && !looksLikeCard) return;
+      seen.add(el);
+      out.push(el);
+    };
     document
       .querySelectorAll("a[href*='/messaging/compose'][aria-label]")
-      .forEach((a) => {
-        const aria = norm(a.getAttribute("aria-label"));
-        if (!/^message\s+/i.test(aria)) return;
-        if (a.closest("[role='dialog']")) return;
-        if (seen.has(a)) return;
-        seen.add(a);
-        out.push(a);
-      });
+      .forEach(consider);
+    document.querySelectorAll("button[aria-label]").forEach(consider);
     return out;
+  }
+
+  // True when the action is the old compose anchor we can pre-fill via its URL.
+  function isComposeLink(el) {
+    return (
+      el &&
+      el.tagName === "A" &&
+      /\/messaging\/compose/.test(el.getAttribute("href") || "")
+    );
   }
 
   // Pull name, LinkedIn's suggested message, and the event description out of a
@@ -104,11 +124,17 @@
       suggested = m[2].trim();
     }
     // canonical body from the URL (handles odd punctuation better than aria)
-    try {
-      const url = new URL(btn.href, location.origin);
-      const b = url.searchParams.get("body");
-      if (b) suggested = b;
-    } catch (_) {}
+    if (isComposeLink(btn)) {
+      try {
+        const url = new URL(btn.href, location.origin);
+        const b = url.searchParams.get("body");
+        if (b) suggested = b;
+      } catch (_) {}
+    } else if (!suggested) {
+      // New layout: the suggested text lives in a span inside the button.
+      const inner = norm(btn.textContent);
+      if (inner) suggested = inner;
+    }
 
     if (!name && card) {
       const link = card.querySelector("a[href*='/in/']");
@@ -468,26 +494,27 @@
 
     // Pre-fill our message by rewriting the compose URL's body param, so the
     // overlay opens already containing our text (no fragile typing needed).
-    try {
-      const url = new URL(item.btnEl.href, location.origin);
-      url.searchParams.set("body", msg);
-      item.btnEl.setAttribute("href", url.toString());
-    } catch (_) {}
+    // Only possible on the old compose-anchor layout; the new button opens an
+    // empty (or LinkedIn-suggested) composer that we fill in ourselves below.
+    const prefill = isComposeLink(item.btnEl);
+    if (prefill) {
+      try {
+        const url = new URL(item.btnEl.href, location.origin);
+        url.searchParams.set("body", msg);
+        item.btnEl.setAttribute("href", url.toString());
+      } catch (_) {}
+    }
 
     await humanClick(item.btnEl);
 
-    // Wait for the composer editor to appear AND for the pre-filled text to
-    // actually land — LinkedIn populates the body from the URL asynchronously,
-    // so we must poll for non-empty content rather than checking once.
+    // Wait for the composer editor to appear. With URL pre-fill we also wait for
+    // the text to land (LinkedIn populates the body asynchronously); without it
+    // we proceed as soon as the editor exists and type the message in ourselves.
     let editor = null;
-    let hasText = false;
     const deadline = Date.now() + 12000;
     while (Date.now() < deadline) {
       editor = findComposerEditor();
-      if (editor && norm(editor.textContent).length > 0) {
-        hasText = true;
-        break;
-      }
+      if (editor && (!prefill || norm(editor.textContent).length > 0)) break;
       await sleep(300);
     }
     if (!editor) {

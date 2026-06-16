@@ -93,6 +93,14 @@
       .trim();
   }
 
+  // "June 12, 2026" -> { ts, year } for sorting / year-filtering.
+  function parseConnected(connectedOn) {
+    if (!connectedOn) return { ts: 0, year: "" };
+    const ts = Date.parse(connectedOn) || 0;
+    const ym = connectedOn.match(/\b(\d{4})\b/);
+    return { ts, year: ym ? ym[1] : "" };
+  }
+
   // ---- scraping --------------------------------------------------------
 
   // Each connection row is an "auto-component-…" container that holds a /in/
@@ -148,7 +156,8 @@
       } catch (_) {}
     }
 
-    return { name, headline, connectedOn, profileLink, imageUrl, urn };
+    const { ts: connectedTs, year: connectedYear } = parseConnected(connectedOn);
+    return { name, headline, connectedOn, connectedTs, connectedYear, profileLink, imageUrl, urn };
   }
 
   function harvest() {
@@ -163,7 +172,11 @@
         const prev = collected.get(data.profileLink);
         if (!prev.headline && data.headline) prev.headline = data.headline;
         if (!prev.imageUrl && data.imageUrl) prev.imageUrl = data.imageUrl;
-        if (!prev.connectedOn && data.connectedOn) prev.connectedOn = data.connectedOn;
+        if (!prev.connectedOn && data.connectedOn) {
+          prev.connectedOn = data.connectedOn;
+          prev.connectedTs = data.connectedTs;
+          prev.connectedYear = data.connectedYear;
+        }
       }
     });
     return added;
@@ -301,13 +314,14 @@
   }
 
   function downloadCsv() {
-    if (!collected.size) {
-      setStatus("Nothing captured yet — click Start first.");
+    const rows = viewRows();
+    if (!rows.length) {
+      setStatus("Nothing to export — capture some connections first.");
       return;
     }
     const header = ["Name", "Headline", "Connected On", "Profile URL", "Image URL", "Profile URN"];
     const lines = [header.map(csvCell).join(",")];
-    collected.forEach((r) => {
+    rows.forEach((r) => {
       lines.push(
         [r.name, r.headline, r.connectedOn, r.profileLink, r.imageUrl, r.urn]
           .map(csvCell)
@@ -316,15 +330,16 @@
     });
     triggerDownload(
       new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8;" }),
-      `linkedin-connections-${collected.size}.csv`
+      `linkedin-connections-${rows.length}.csv`
     );
-    setStatus(`Downloaded CSV (${collected.size} connections).`);
+    setStatus(`Downloaded CSV (${rows.length} connections).`);
   }
 
   // Excel (.xls) via an HTML table — Excel opens this natively as a spreadsheet.
   function downloadXls() {
-    if (!collected.size) {
-      setStatus("Nothing captured yet — click Start first.");
+    const data = viewRows();
+    if (!data.length) {
+      setStatus("Nothing to export — capture some connections first.");
       return;
     }
     const esc = (s) =>
@@ -334,7 +349,7 @@
         .replace(/>/g, "&gt;");
     const headers = ["Name", "Headline", "Connected On", "Profile URL", "Image URL", "Profile URN"];
     let rows = "<tr>" + headers.map((h) => `<th>${h}</th>`).join("") + "</tr>";
-    collected.forEach((r) => {
+    data.forEach((r) => {
       rows +=
         "<tr>" +
         [r.name, r.headline, r.connectedOn, r.profileLink, r.imageUrl, r.urn]
@@ -348,9 +363,9 @@
       `<body><table border="1">${rows}</table></body></html>`;
     triggerDownload(
       new Blob([doc], { type: "application/vnd.ms-excel" }),
-      `linkedin-connections-${collected.size}.xls`
+      `linkedin-connections-${data.length}.xls`
     );
-    setStatus(`Downloaded Excel (${collected.size} connections).`);
+    setStatus(`Downloaded Excel (${data.length} connections).`);
   }
 
   function triggerDownload(blob, filename) {
@@ -546,6 +561,18 @@
           <button id="lc-remove" class="liw-btn liw-danger">Remove selected</button>
         </div>
         <div id="liw-status">Click “Start” to auto-scroll and capture your connections.</div>
+        <div id="lc-filters">
+          <input id="lc-search" type="text" placeholder="Search name or headline…">
+          <div class="lc-filterrow">
+            <select id="lc-year"><option value="">All years</option></select>
+            <select id="lc-sort">
+              <option value="date-desc">Newest first</option>
+              <option value="date-asc">Oldest first</option>
+              <option value="name-asc">Name A–Z</option>
+              <option value="name-desc">Name Z–A</option>
+            </select>
+          </div>
+        </div>
         <div id="lc-countbar">
           <span id="lc-count">0 captured</span>
           <label class="lc-selall"><input type="checkbox" id="lc-selall"> shown</label>
@@ -571,6 +598,9 @@
     panel.querySelector("#lc-csv").addEventListener("click", downloadCsv);
     panel.querySelector("#lc-xls").addEventListener("click", downloadXls);
     panel.querySelector("#lc-remove").addEventListener("click", removeSelected);
+    panel.querySelector("#lc-search").addEventListener("input", renderList);
+    panel.querySelector("#lc-year").addEventListener("change", renderList);
+    panel.querySelector("#lc-sort").addEventListener("change", renderList);
     panel.querySelector("#lc-selall").addEventListener("change", (e) => {
       const listEl = panel.querySelector("#lc-list");
       listEl.querySelectorAll(".lc-row").forEach((el) => {
@@ -594,10 +624,60 @@
   // Render the captured list inside the panel. Capped for performance on large
   // networks — every row is still in the CSV/Excel export.
   const DISPLAY_CAP = 1000;
+
+  function comparator(mode) {
+    switch (mode) {
+      case "date-asc":
+        return (a, b) => (a.connectedTs || 0) - (b.connectedTs || 0);
+      case "name-asc":
+        return (a, b) => (a.name || "").localeCompare(b.name || "");
+      case "name-desc":
+        return (a, b) => (b.name || "").localeCompare(a.name || "");
+      case "date-desc":
+      default:
+        return (a, b) => (b.connectedTs || 0) - (a.connectedTs || 0);
+    }
+  }
+
+  // The current filtered + sorted view of captured connections (no display cap).
+  // Used by both the in-panel list and the CSV/Excel export — so you export
+  // exactly what the filters/sort/search show.
+  function viewRows() {
+    let rows = [...collected.values()];
+    if (!panel) return rows;
+    const filterText = norm(panel.querySelector("#lc-search")?.value || "").toLowerCase();
+    const filterYear = panel.querySelector("#lc-year")?.value || "";
+    const sortMode = panel.querySelector("#lc-sort")?.value || "date-desc";
+    if (filterText)
+      rows = rows.filter((r) =>
+        ((r.name || "") + " " + (r.headline || "")).toLowerCase().includes(filterText)
+      );
+    if (filterYear) rows = rows.filter((r) => r.connectedYear === filterYear);
+    rows.sort(comparator(sortMode));
+    return rows;
+  }
+
+  // Rebuild the year dropdown from captured data, preserving the current pick.
+  function refreshYearOptions() {
+    const sel = panel && panel.querySelector("#lc-year");
+    if (!sel) return;
+    const cur = sel.value;
+    const years = [...new Set([...collected.values()].map((r) => r.connectedYear).filter(Boolean))].sort(
+      (a, b) => b.localeCompare(a)
+    );
+    sel.innerHTML =
+      `<option value="">All years</option>` +
+      years.map((y) => `<option value="${y}">${y}</option>`).join("");
+    sel.value = years.includes(cur) ? cur : "";
+  }
+
   function renderList() {
     const listEl = panel && panel.querySelector("#lc-list");
     if (!listEl) return;
-    const rows = [...collected.values()];
+
+    refreshYearOptions();
+    const rows = viewRows();
+    const filteredTotal = rows.length;
     const shown = rows.slice(0, DISPLAY_CAP);
 
     listEl.innerHTML = shown
@@ -628,11 +708,14 @@
       });
     });
 
-    const more = rows.length - shown.length;
     const countEl = panel.querySelector("#lc-count");
-    if (countEl)
+    if (countEl) {
+      const filtering = filteredTotal !== collected.size;
       countEl.textContent =
-        `${rows.length} captured` + (more > 0 ? ` (showing first ${DISPLAY_CAP})` : "");
+        `${collected.size} captured` +
+        (filtering ? ` · ${filteredTotal} shown` : "") +
+        (filteredTotal > DISPLAY_CAP ? ` (first ${DISPLAY_CAP})` : "");
+    }
     updateSelCount();
   }
 
