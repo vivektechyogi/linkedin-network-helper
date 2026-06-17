@@ -119,7 +119,8 @@
     const profileLink = profileA ? profileA.href.split("?")[0] : "";
     if (!profileLink) return null;
 
-    // name from the avatar's alt / aria-label, falling back to the name <p>
+    // The name link holds the name <p> then the headline <p>; the avatar link
+    // holds only the figure. Pick the link that actually contains text.
     const img = row.querySelector("img[alt]");
     const svg = row.querySelector("svg[aria-label]");
     let name = norm(
@@ -127,22 +128,25 @@
     )
       .replace(/['’]s profile picture.*$/i, "")
       .trim();
-    if (!name) {
-      const nameP = row.querySelector("a[href*='/in/'] p");
-      if (nameP) name = norm(nameP.textContent);
-    }
 
-    // headline = a <p><span> that isn't the name or the "Connected on" line
+    const nameLink = [...row.querySelectorAll("a[href*='/in/']")].find((a) =>
+      a.querySelector("p")
+    );
+    const namePs = nameLink ? [...nameLink.querySelectorAll("p")] : [];
+    if (!name && namePs[0]) name = norm(namePs[0].textContent);
+
+    // headline = the 2nd <p> in the name link (1st is the name). Fall back to a
+    // single <p> only if it isn't the name.
     let headline = "";
+    if (namePs.length >= 2) headline = norm(namePs[1].textContent);
+    else if (namePs.length === 1 && norm(namePs[0].textContent) !== name)
+      headline = norm(namePs[0].textContent);
+
+    // "Connected on …" is a row-level <p> outside the name link.
     let connectedOn = "";
     row.querySelectorAll("p").forEach((p) => {
       const t = norm(p.textContent);
-      if (!t) return;
-      if (/^connected on/i.test(t)) {
-        connectedOn = t.replace(/^connected on\s*/i, "");
-      } else if (p.querySelector("span") && t !== name && !headline) {
-        headline = t;
-      }
+      if (/^connected on/i.test(t)) connectedOn = t.replace(/^connected on\s*/i, "");
     });
 
     const imageUrl = img ? img.src : "";
