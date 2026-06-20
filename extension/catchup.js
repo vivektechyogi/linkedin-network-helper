@@ -370,18 +370,32 @@
       deepQueryAll("[componentkey^='referralSendButton']").find(
         (b) => b.tagName === "BUTTON" && !b.disabled && b.getAttribute("aria-disabled") !== "true"
       );
+    const haveContainer = !!(container && document.contains(container));
     let sendBtn = null;
-    let isSdui = false;
+    // "trusted" = an unambiguous, in-composer Send control. Clicking one of
+    // these IS the send, even if the UI doesn't clear/close fast enough for us
+    // to verify. A document-wide fallback match is not trusted (still verified).
+    let trusted = false;
     const deadline = Date.now() + 3500;
     while (Date.now() < deadline) {
-      const d = directSend();
-      if (d) {
-        sendBtn = d;
-        isSdui = true;
+      const direct = directSend(); // SDUI referralSendButton — unambiguous
+      if (direct) {
+        sendBtn = direct;
+        trusted = true;
         break;
       }
-      sendBtn = findSend(scope) || findSend(document);
-      if (sendBtn) break;
+      const scoped = haveContainer ? findSend(container) : null; // Send inside composer
+      if (scoped) {
+        sendBtn = scoped;
+        trusted = true;
+        break;
+      }
+      const any = findSend(document); // last resort — verify before trusting
+      if (any) {
+        sendBtn = any;
+        trusted = false;
+        break;
+      }
       await sleep(250);
     }
     if (sendBtn) {
@@ -393,10 +407,8 @@
       if (confirmedSent(container)) return true;
       await sleep(rand(800, 1400)); // network/close can lag
       if (confirmedSent(container)) return true;
-      // The SDUI "Send message" modal sends on this click but doesn't reliably
-      // clear/close fast enough to confirm — trust the click we made on the
-      // enabled Send button rather than report a false failure.
-      if (isSdui) return true;
+      // Clicked an enabled Send control inside the composer → trust it as sent.
+      if (trusted) return true;
     }
 
     // 2) Submit the message form directly (most reliable for Enter-to-send UIs).
