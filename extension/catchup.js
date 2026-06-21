@@ -325,17 +325,47 @@
   //  - a FRESH editor (the old node detaches on re-render) is now empty (the
   //    messaging overlay stays open with an emptied box).
   // A stale reference lies, so always re-query.
-  function confirmedSent(container) {
+  function confirmedSent(container, sentText) {
     if (container && !document.contains(container)) return true;
     const ed = findComposerEditor();
     if (!ed) return true; // editor gone entirely → message left / box closed
-    return norm(editorValue(ed)).length === 0;
+    if (norm(editorValue(ed)).length === 0) return true; // box cleared → sent
+    // The overlay can keep a stale draft visible briefly; treat the message as
+    // sent if our exact text now appears as a delivered bubble in the thread.
+    if (sentText) return sentBubblePresent(container, sentText);
+    return false;
+  }
+
+  // Look for our just-sent text rendered as a message bubble (NOT inside the
+  // editor) within the open conversation — a positive "it left the box" signal
+  // that works even when the editor doesn't clear instantly.
+  function sentBubblePresent(container, sentText) {
+    const want = norm(sentText);
+    if (!want) return false;
+    const scope =
+      (container && document.contains(container) && container) ||
+      messageDialog() ||
+      deepQueryAll("[class*='msg-overlay']")[0] ||
+      document;
+    const editor = findComposerEditor();
+    const bubbles = (scope.querySelectorAll
+      ? [...scope.querySelectorAll("p, span, div")]
+      : []
+    ).filter((el) => {
+      if (editor && (el === editor || el.contains(editor) || editor.contains(el))) return false;
+      if (el.isContentEditable) return false;
+      return norm(el.textContent) === want;
+    });
+    return bubbles.length > 0;
   }
 
   // Try several ways to actually submit, confirming after each. Returns true
   // only when the editor is confirmed empty (message left the box).
-  async function sendMessage(editor) {
+  async function sendMessage(editor, sentText) {
     const container = composerContainerOf(editor);
+    // What we expect to see leave the box (for positive confirmation).
+    const want = norm(sentText || editorValue(editor));
+    const isCE = !isFieldEditor(editor); // contenteditable overlay vs SDUI textarea
 
     // 1) An explicit Send button/control, if this state has one. Cover plain
     //    <button>s, role="button" divs, and icon buttons labelled via aria —
@@ -366,17 +396,23 @@
     // The SDUI "Send message" modal's button carries a stable componentkey and
     // is briefly DISABLED right after we fill the text (until the framework
     // processes the input event) — so poll for an ENABLED Send control.
-    const directSend = () =>
-      deepQueryAll("[componentkey^='referralSendButton']").find(
-        (b) => b.tagName === "BUTTON" && !b.disabled && b.getAttribute("aria-disabled") !== "true"
-      );
+    // The SDUI referralSendButton in any state (enabled or not) — so we can
+    // re-nudge its input when it's stuck disabled, and click it as a last resort.
+    const referralBtn = () =>
+      deepQueryAll("[componentkey^='referralSendButton']").find((b) => b.tagName === "BUTTON");
+    const isEnabled = (b) => b && !b.disabled && b.getAttribute("aria-disabled") !== "true";
+    const directSend = () => {
+      const b = referralBtn();
+      return isEnabled(b) ? b : null;
+    };
     const haveContainer = !!(container && document.contains(container));
     let sendBtn = null;
     // "trusted" = an unambiguous, in-composer Send control. Clicking one of
     // these IS the send, even if the UI doesn't clear/close fast enough for us
     // to verify. A document-wide fallback match is not trusted (still verified).
     let trusted = false;
-    const deadline = Date.now() + 3500;
+    let nudged = false;
+    const deadline = Date.now() + 4000;
     while (Date.now() < deadline) {
       const direct = directSend(); // SDUI referralSendButton — unambiguous
       if (direct) {
@@ -396,6 +432,18 @@
         trusted = false;
         break;
       }
+      // A Send button exists but is stuck disabled (framework didn't register
+      // our text) — re-fire the input so it validates and enables. Try once.
+      if (!nudged && referralBtn() && want) {
+        nudged = true;
+        const ed = findComposerEditor() || editor;
+        if (ed && isFieldEditor(ed)) {
+          ed.focus();
+          if (ed._valueTracker) ed._valueTracker.setValue("");
+          ed.dispatchEvent(new InputEvent("input", { inputType: "insertText", data: want, bubbles: true }));
+          ed.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
       await sleep(250);
     }
     if (sendBtn) {
@@ -404,9 +452,9 @@
         sendBtn.click(); // native click as a reliable fallback for the handler
       } catch (_) {}
       await sleep(rand(900, 1500));
-      if (confirmedSent(container)) return true;
+      if (confirmedSent(container, want)) return true;
       await sleep(rand(800, 1400)); // network/close can lag
-      if (confirmedSent(container)) return true;
+      if (confirmedSent(container, want)) return true;
       // Clicked an enabled Send control inside the composer → trust it as sent.
       if (trusted) return true;
     }
@@ -421,18 +469,35 @@
         else form.submit();
       } catch (_) {}
       await sleep(rand(700, 1100));
-      if (confirmedSent(container)) return true;
+      if (confirmedSent(container, want)) return true;
     }
 
-    // 3) Enter key on the (freshly found) editor, retried. (No-op for a plain
-    //    textarea where Enter inserts a newline, but harmless.)
+    // 3) Enter key on the (freshly found) editor, retried. For the messaging
+    //    overlay (contenteditable) Enter IS the send action, so a successful
+    //    keypress on it is trusted even if confirmation lags. (No-op for a plain
+    //    SDUI textarea where Enter inserts a newline — handled above.)
     for (let attempt = 0; attempt < 3; attempt++) {
       const ed = findComposerEditor() || editor;
+      const editable = ed && ed.isContentEditable !== false && !isFieldEditor(ed);
       ed.focus();
       await sleep(rand(150, 350));
       pressEnter(ed);
       await sleep(rand(700, 1100));
-      if (confirmedSent(container)) return true;
+      if (confirmedSent(container, want)) return true;
+      // On the overlay, Enter is the canonical send — if the box is now empty
+      // or our text shows in the thread we're done; if neither, retry once more.
+      if (editable && attempt >= 1 && (confirmedSent(container, want) || sentBubblePresent(container, want)))
+        return true;
+    }
+
+    // 4) Last resort: the SDUI Send button is present but never enabled — click
+    //    it anyway (its handler often still fires) and verify by thread bubble.
+    const stuck = referralBtn();
+    if (stuck) {
+      try { stuck.click(); } catch (_) {}
+      await humanClick(stuck);
+      await sleep(rand(900, 1400));
+      if (confirmedSent(container, want)) return true;
     }
 
     // Still here → couldn't submit. Dump the candidate buttons so we can see
@@ -640,13 +705,32 @@
 
     // <textarea>/<input> (the SDUI "Send message" modal): drive the native
     // value setter so React/SDUI sees the change and enables its Send button.
+    // The framework only re-validates (and enables Send) when it detects a real
+    // value change — so force its internal value tracker to a stale value first,
+    // then fire input, and bracket it with key events that mimic real typing.
     if (isFieldEditor(editor)) {
+      const fireInput = (data) =>
+        editor.dispatchEvent(
+          new InputEvent("input", { inputType: "insertText", data, bubbles: true })
+        );
       setNativeValue(editor, "");
-      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      if (editor._valueTracker) editor._valueTracker.setValue(" ");
+      fireInput("");
+      editor.dispatchEvent(makeEnter("keydown")); // some validators key off keyup/down
       setNativeValue(editor, text);
-      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      // Force the tracker to a value different from `text` so React registers a diff.
+      if (editor._valueTracker) editor._valueTracker.setValue("");
+      fireInput(text.slice(-1) || text);
       editor.dispatchEvent(new Event("change", { bubbles: true }));
-      await sleep(rand(100, 250));
+      editor.dispatchEvent(new KeyboardEvent("keyup", { key: "a", bubbles: true }));
+      await sleep(rand(150, 300));
+      // Nudge again if the value somehow didn't stick (rare SDUI re-render race).
+      if (norm(editor.value) !== norm(text)) {
+        setNativeValue(editor, text);
+        if (editor._valueTracker) editor._valueTracker.setValue("");
+        fireInput(text);
+      }
+      await sleep(rand(100, 200));
       return;
     }
 
@@ -740,7 +824,7 @@
     if (norm(editorValue(editor)).length === 0)
       return { ok: false, msg: "Message box opened but stayed empty after typing." };
 
-    const sent = await sendMessage(editor);
+    const sent = await sendMessage(editor, msg);
     await sleep(rand(800, 1500));
     if (!sent) {
       await closeAllComposers();
@@ -765,7 +849,7 @@
       if (ed2) {
         await setEditorText(ed2, note);
         await sleep(rand(500, 1100));
-        const sent2 = await sendMessage(ed2);
+        const sent2 = await sendMessage(ed2, note);
         await sleep(rand(700, 1300));
         if (!sent2) {
           await closeAllComposers();
