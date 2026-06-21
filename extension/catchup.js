@@ -330,6 +330,7 @@
       el.parentElement,
       el.closest && el.closest("form.msg-form, form"),
       el.closest && el.closest("[class*='msg-overlay']"),
+      document,
     ].filter((t, i, a) => t && a.indexOf(t) === i);
     for (const t of targets) {
       t.dispatchEvent(makeEnter("keydown"));
@@ -478,14 +479,19 @@
       if (trusted) return true;
     }
 
-    // 2) Submit the message form directly (most reliable for Enter-to-send UIs).
+    // 2) Submit via the form ONLY when it has a real submit button (the
+    //    existing-conversation thread overlay). On the "New message" COMPOSE
+    //    overlay the form has no submit button, so requestSubmit() would trigger
+    //    a NATIVE form submission (page reload) and lose the message — so we skip
+    //    it there and rely on Enter (step 3) instead.
     const form =
       (editor.closest && editor.closest("form.msg-form, form")) ||
       document.querySelector("form.msg-form, form.msg-form--thread-footer-feature");
-    if (form) {
+    const formSubmitBtn = form && form.querySelector("button[type='submit']");
+    if (form && formSubmitBtn) {
       try {
-        if (form.requestSubmit) form.requestSubmit();
-        else form.submit();
+        if (form.requestSubmit) form.requestSubmit(formSubmitBtn);
+        else formSubmitBtn.click();
       } catch (_) {}
       await sleep(rand(700, 1100));
       if (confirmedSent(container, want)) return true;
@@ -493,10 +499,10 @@
 
     // 3) Enter key on the (freshly found) editor, retried. For the messaging
     //    overlay (contenteditable) Enter IS the send action (the footer literally
-    //    reads "Press Enter to Send" with no Send button), so a confirmed send
-    //    here is success. (No-op for a plain SDUI textarea where Enter inserts a
-    //    newline — that path is handled by the button above.)
-    for (let attempt = 0; attempt < 4; attempt++) {
+    //    reads "Press Enter to Send" with no Send button). (No-op for a plain
+    //    SDUI textarea where Enter inserts a newline — handled by the button
+    //    path above.)
+    for (let attempt = 0; attempt < 5; attempt++) {
       const ed = findComposerEditor() || editor;
       // Blur the recipient typeahead so Enter targets the message box, not the
       // recipient search (this is a "New message" compose overlay).
@@ -506,21 +512,17 @@
         );
         if (search && document.activeElement === search) search.blur();
       } catch (_) {}
-      ed.focus();
-      await sleep(rand(200, 400));
       pressEnter(ed);
       await sleep(rand(700, 1100));
       if (confirmedSent(container, want)) return true;
       if (sentBubblePresent(container, want)) return true;
-      // Re-submit the form too between Enter attempts — belt and braces.
-      if (form) {
-        try {
-          if (form.requestSubmit) form.requestSubmit();
-          else form.submit();
-        } catch (_) {}
-        await sleep(rand(500, 900));
-        if (confirmedSent(container, want)) return true;
-      }
+    }
+
+    // 3b) Last resort for the compose overlay: open the send-options menu and
+    //     click an explicit Send item if LinkedIn offers one there.
+    if (!formSubmitBtn) {
+      const sent = await sendViaOptionsMenu(container, want);
+      if (sent) return true;
     }
 
     // 4) Last resort: the SDUI Send button is present but never enabled — click
@@ -558,6 +560,58 @@
         )
       );
     } catch (_) {}
+    return false;
+  }
+
+  // Compose-overlay last resort: the footer has a "send options" toggle but no
+  // Send button (it's in "Press Enter to Send" mode). Open that menu and turn
+  // OFF enter-to-send, which makes LinkedIn render a real Send button we can
+  // click — far more reliable than a synthetic Enter. Then click it.
+  async function sendViaOptionsMenu(container, want) {
+    const scope = container && document.contains(container) ? container : document;
+    const toggle = deepQueryAll("button").find((b) => {
+      if (scope.contains && !scope.contains(b)) return false;
+      const cls = clsOf(b);
+      const aria = norm(b.getAttribute("aria-label") || "").toLowerCase();
+      return /msg-form__send-toggle/.test(cls) || /send option/.test(aria);
+    });
+    if (!toggle) return false;
+    try {
+      toggle.click();
+    } catch (_) {}
+    await sleep(rand(400, 700));
+    // The menu offers a "Press enter to send" toggle — turn it off so the Send
+    // button appears. Match a menuitem/checkbox/button mentioning enter-to-send.
+    const optItems = deepQueryAll(
+      "[role='menuitem'], [role='menuitemcheckbox'], [role='option'], button, label"
+    ).filter((el) => /enter to send/i.test(norm(el.textContent)));
+    for (const it of optItems) {
+      try {
+        const ck = it.querySelector && it.querySelector("input[type='checkbox']");
+        (ck || it).click();
+      } catch (_) {}
+      await sleep(rand(300, 600));
+    }
+    // A Send button should now be in the footer — find and click it.
+    for (let i = 0; i < 6; i++) {
+      const sendBtn = deepQueryAll("button, [role='button']").find((b) => {
+        if (scope.contains && !scope.contains(b)) return false;
+        if (b.disabled || b.getAttribute("aria-disabled") === "true") return false;
+        const t = norm(b.textContent).toLowerCase();
+        const aria = norm(b.getAttribute("aria-label") || "").toLowerCase();
+        return t === "send" || aria === "send" || /^send( message)?$/.test(t);
+      });
+      if (sendBtn) {
+        await humanClick(sendBtn);
+        try { sendBtn.click(); } catch (_) {}
+        await sleep(rand(800, 1300));
+        if (confirmedSent(container, want)) return true;
+        await sleep(rand(700, 1100));
+        if (confirmedSent(container, want)) return true;
+        return true; // an explicit in-composer Send click is trusted
+      }
+      await sleep(350);
+    }
     return false;
   }
 

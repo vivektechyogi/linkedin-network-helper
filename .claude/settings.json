@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(git -c user.name=Vivek -c user.email=iamviveklalan@gmail.com commit -q -m 'Catch-up: reliable send across SDUI modal + messaging overlay *)",
-      "Bash(git -c user.name=Vivek -c user.email=iamviveklalan@gmail.com commit -q -m 'Catch-up: fix Enter-to-send on the New-message overlay \\(no Send button\\) *)"
+      "Bash(git -c user.name=Vivek -c user.email=iamviveklalan@gmail.com commit -q -m 'Catch-up: fix Enter-to-send on the New-message overlay \\(no Send button\\) *)",
+      "Bash(git -c user.name=Vivek -c user.email=iamviveklalan@gmail.com commit -q -m 'Catch-up: safer compose-overlay send + send-button fallback *)"
     ]
   }
 }
