@@ -386,6 +386,22 @@
     // What we expect to see leave the box (for positive confirmation).
     const want = norm(sentText || editorValue(editor));
     const isCE = !isFieldEditor(editor); // contenteditable overlay vs SDUI textarea
+    const trace = [];
+    const T = (...a) => {
+      trace.push(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "));
+    };
+    const finish = (ok, why) => {
+      T((ok ? "✓ SENT via " : "✗ FAILED at ") + why);
+      try {
+        console.log("[LI Catchup] sendMessage trace:\n  " + trace.join("\n  "));
+      } catch (_) {}
+      return ok;
+    };
+    T(
+      "start type=", isCE ? "contenteditable" : "textarea",
+      "want=", want.slice(0, 40),
+      "editorInDom=", document.contains(editor)
+    );
 
     // 1) An explicit Send button/control, if this state has one. Cover plain
     //    <button>s, role="button" divs, and icon buttons labelled via aria —
@@ -466,35 +482,43 @@
       }
       await sleep(250);
     }
+    T("step1 sendBtn=", !!sendBtn, "trusted=", trusted);
     if (sendBtn) {
       await humanClick(sendBtn);
       try {
         sendBtn.click(); // native click as a reliable fallback for the handler
       } catch (_) {}
       await sleep(rand(900, 1500));
-      if (confirmedSent(container, want)) return true;
+      if (confirmedSent(container, want)) return finish(true, "step1 button + confirm");
       await sleep(rand(800, 1400)); // network/close can lag
-      if (confirmedSent(container, want)) return true;
+      if (confirmedSent(container, want)) return finish(true, "step1 button + confirm(2)");
       // Clicked an enabled Send control inside the composer → trust it as sent.
-      if (trusted) return true;
+      if (trusted) return finish(true, "step1 trusted button click");
     }
 
-    // 2) Submit via the form ONLY when it has a real submit button (the
-    //    existing-conversation thread overlay). On the "New message" COMPOSE
-    //    overlay the form has no submit button, so requestSubmit() would trigger
-    //    a NATIVE form submission (page reload) and lose the message — so we skip
-    //    it there and rely on Enter (step 3) instead.
+    // 2) Submit the message form directly. This is the mechanism that works for
+    //    the "Press Enter to Send" overlay: LinkedIn's msg-form has its own
+    //    submit handler that sends the message and prevents the default page
+    //    navigation, so requestSubmit() (no submitter) reliably fires it — even
+    //    though the compose form has no visible Send button. Confirm after.
     const form =
       (editor.closest && editor.closest("form.msg-form, form")) ||
       document.querySelector("form.msg-form, form.msg-form--thread-footer-feature");
     const formSubmitBtn = form && form.querySelector("button[type='submit']");
-    if (form && formSubmitBtn) {
+    T("step2 form=", !!form, "submitBtn=", !!formSubmitBtn);
+    if (form) {
       try {
-        if (form.requestSubmit) form.requestSubmit(formSubmitBtn);
-        else formSubmitBtn.click();
-      } catch (_) {}
+        if (form.requestSubmit) form.requestSubmit(formSubmitBtn || undefined);
+        else if (formSubmitBtn) formSubmitBtn.click();
+        // No native form.submit() fallback — that bypasses LinkedIn's handler
+        // and would reload the page, losing the message.
+      } catch (_) {
+        try { form.requestSubmit && form.requestSubmit(); } catch (__) {}
+      }
+      await sleep(rand(800, 1200));
+      if (confirmedSent(container, want)) return finish(true, "step2 form submit");
       await sleep(rand(700, 1100));
-      if (confirmedSent(container, want)) return true;
+      if (confirmedSent(container, want)) return finish(true, "step2 form submit(2)");
     }
 
     // 3) Enter key on the (freshly found) editor, retried. For the messaging
@@ -514,25 +538,27 @@
       } catch (_) {}
       pressEnter(ed);
       await sleep(rand(700, 1100));
-      if (confirmedSent(container, want)) return true;
-      if (sentBubblePresent(container, want)) return true;
+      if (confirmedSent(container, want)) return finish(true, "step3 Enter#" + attempt);
+      if (sentBubblePresent(container, want)) return finish(true, "step3 Enter bubble#" + attempt);
     }
+    T("step3 Enter exhausted; editorText=", norm(editorValue(findComposerEditor() || editor)).slice(0, 40));
 
     // 3b) Last resort for the compose overlay: open the send-options menu and
     //     click an explicit Send item if LinkedIn offers one there.
     if (!formSubmitBtn) {
-      const sent = await sendViaOptionsMenu(container, want);
-      if (sent) return true;
+      const sent = await sendViaOptionsMenu(container, want, T);
+      if (sent) return finish(true, "step3b options-menu Send button");
     }
 
     // 4) Last resort: the SDUI Send button is present but never enabled — click
     //    it anyway (its handler often still fires) and verify by thread bubble.
     const stuck = referralBtn();
+    T("step4 stuckReferralBtn=", !!stuck);
     if (stuck) {
       try { stuck.click(); } catch (_) {}
       await humanClick(stuck);
       await sleep(rand(900, 1400));
-      if (confirmedSent(container, want)) return true;
+      if (confirmedSent(container, want)) return finish(true, "step4 stuck button");
     }
 
     // Still here → couldn't submit. Dump the candidate buttons so we can see
@@ -560,14 +586,15 @@
         )
       );
     } catch (_) {}
-    return false;
+    return finish(false, "all methods exhausted");
   }
 
   // Compose-overlay last resort: the footer has a "send options" toggle but no
   // Send button (it's in "Press Enter to Send" mode). Open that menu and turn
   // OFF enter-to-send, which makes LinkedIn render a real Send button we can
   // click — far more reliable than a synthetic Enter. Then click it.
-  async function sendViaOptionsMenu(container, want) {
+  async function sendViaOptionsMenu(container, want, T) {
+    const log = T || (() => {});
     const scope = container && document.contains(container) ? container : document;
     const toggle = deepQueryAll("button").find((b) => {
       if (scope.contains && !scope.contains(b)) return false;
@@ -575,6 +602,7 @@
       const aria = norm(b.getAttribute("aria-label") || "").toLowerCase();
       return /msg-form__send-toggle/.test(cls) || /send option/.test(aria);
     });
+    log("optionsMenu toggleFound=", !!toggle);
     if (!toggle) return false;
     try {
       toggle.click();
@@ -585,6 +613,7 @@
     const optItems = deepQueryAll(
       "[role='menuitem'], [role='menuitemcheckbox'], [role='option'], button, label"
     ).filter((el) => /enter to send/i.test(norm(el.textContent)));
+    log("optionsMenu enterToSendItems=", optItems.length);
     for (const it of optItems) {
       try {
         const ck = it.querySelector && it.querySelector("input[type='checkbox']");
