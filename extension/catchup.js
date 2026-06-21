@@ -314,9 +314,28 @@
 
   function pressEnter(el) {
     el.focus();
-    el.dispatchEvent(makeEnter("keydown"));
-    el.dispatchEvent(makeEnter("keypress"));
-    el.dispatchEvent(makeEnter("keyup"));
+    // Put a real caret at the end of the contenteditable — LinkedIn's send
+    // handler reads the current selection/range, and a focused box with no
+    // selection can make it treat the box as empty and ignore Enter.
+    try {
+      const sel = window.getSelection();
+      sel.selectAllChildren(el);
+      sel.collapseToEnd();
+    } catch (_) {}
+    // Dispatch on the editor AND its delegated-listener ancestors (the message
+    // form / overlay). LinkedIn attaches the keydown handler higher up in some
+    // layouts, so firing only on the editor misses it.
+    const targets = [
+      el,
+      el.parentElement,
+      el.closest && el.closest("form.msg-form, form"),
+      el.closest && el.closest("[class*='msg-overlay']"),
+    ].filter((t, i, a) => t && a.indexOf(t) === i);
+    for (const t of targets) {
+      t.dispatchEvent(makeEnter("keydown"));
+      t.dispatchEvent(makeEnter("keypress"));
+      t.dispatchEvent(makeEnter("keyup"));
+    }
   }
 
   // Confirm a send. Two valid signals, depending on the UI flow:
@@ -473,21 +492,35 @@
     }
 
     // 3) Enter key on the (freshly found) editor, retried. For the messaging
-    //    overlay (contenteditable) Enter IS the send action, so a successful
-    //    keypress on it is trusted even if confirmation lags. (No-op for a plain
-    //    SDUI textarea where Enter inserts a newline — handled above.)
-    for (let attempt = 0; attempt < 3; attempt++) {
+    //    overlay (contenteditable) Enter IS the send action (the footer literally
+    //    reads "Press Enter to Send" with no Send button), so a confirmed send
+    //    here is success. (No-op for a plain SDUI textarea where Enter inserts a
+    //    newline — that path is handled by the button above.)
+    for (let attempt = 0; attempt < 4; attempt++) {
       const ed = findComposerEditor() || editor;
-      const editable = ed && ed.isContentEditable !== false && !isFieldEditor(ed);
+      // Blur the recipient typeahead so Enter targets the message box, not the
+      // recipient search (this is a "New message" compose overlay).
+      try {
+        const search = (container || document).querySelector(
+          ".msg-connections-typeahead__search-field"
+        );
+        if (search && document.activeElement === search) search.blur();
+      } catch (_) {}
       ed.focus();
-      await sleep(rand(150, 350));
+      await sleep(rand(200, 400));
       pressEnter(ed);
       await sleep(rand(700, 1100));
       if (confirmedSent(container, want)) return true;
-      // On the overlay, Enter is the canonical send — if the box is now empty
-      // or our text shows in the thread we're done; if neither, retry once more.
-      if (editable && attempt >= 1 && (confirmedSent(container, want) || sentBubblePresent(container, want)))
-        return true;
+      if (sentBubblePresent(container, want)) return true;
+      // Re-submit the form too between Enter attempts — belt and braces.
+      if (form) {
+        try {
+          if (form.requestSubmit) form.requestSubmit();
+          else form.submit();
+        } catch (_) {}
+        await sleep(rand(500, 900));
+        if (confirmedSent(container, want)) return true;
+      }
     }
 
     // 4) Last resort: the SDUI Send button is present but never enabled — click
@@ -504,6 +537,13 @@
     // what the Send control actually looks like.
     try {
       const root = container && document.contains(container) ? container : messageDialog() || document;
+      const edNow = findComposerEditor();
+      console.log(
+        "[LI Catchup] send failed.",
+        "editorText=", edNow ? norm(editorValue(edNow)).slice(0, 60) : "(no editor)",
+        "| form=", !!form,
+        "| container in DOM=", !!(container && document.contains(container))
+      );
       const btns = deepQueryAll("button, [role='button']").filter(
         (b) => root === document || (root.contains && root.contains(b))
       );
