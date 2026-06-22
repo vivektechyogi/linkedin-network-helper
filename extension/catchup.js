@@ -604,14 +604,36 @@
     });
     log("optionsMenu toggleFound=", !!toggle);
     if (!toggle) return false;
+    // The toggle lives inside an artdeco-hoverable-trigger — open it by hovering
+    // (mouseenter/over) AND clicking, since some variants are hover-driven.
+    const trigger = (toggle.closest && toggle.closest(".artdeco-hoverable-trigger")) || toggle;
+    try {
+      ["mouseover", "mouseenter", "mousemove"].forEach((t) =>
+        trigger.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window }))
+      );
+    } catch (_) {}
+    await sleep(rand(250, 450));
     try {
       toggle.click();
     } catch (_) {}
-    await sleep(rand(400, 700));
+    await sleep(rand(500, 800));
+    // Dump what the opened menu actually contains so we can see its real markup.
+    try {
+      const items = deepQueryAll(
+        "[role='menuitem'], [role='menuitemcheckbox'], [role='option'], [role='radio'], li, button, label"
+      ).filter((el) => {
+        const t = norm(el.textContent);
+        return t && t.length < 60 && /send|enter/i.test(t);
+      });
+      console.log("[LI Catchup] send-options menu items:", items.length);
+      items.forEach((el, i) =>
+        console.log(`  menu#${i}`, el.tagName, "role=", el.getAttribute("role"), "| text=", norm(el.textContent).slice(0, 50))
+      );
+    } catch (_) {}
     // The menu offers a "Press enter to send" toggle — turn it off so the Send
     // button appears. Match a menuitem/checkbox/button mentioning enter-to-send.
     const optItems = deepQueryAll(
-      "[role='menuitem'], [role='menuitemcheckbox'], [role='option'], button, label"
+      "[role='menuitem'], [role='menuitemcheckbox'], [role='option'], [role='radio'], button, label"
     ).filter((el) => /enter to send/i.test(norm(el.textContent)));
     log("optionsMenu enterToSendItems=", optItems.length);
     for (const it of optItems) {
@@ -937,12 +959,27 @@
       };
     }
 
-    // Ensure the editor actually contains our intended message. LinkedIn's URL
-    // pre-fill often ignores our appended/custom text, so if what's in the box
-    // doesn't match, overwrite it directly.
-    if (norm(editorValue(editor)) !== norm(msg)) {
-      await setEditorText(editor, msg);
-      await sleep(rand(400, 900));
+    // LinkedIn populates this overlay with its OWN suggested text asynchronously
+    // (the AI "gai" module), and it can overwrite ours a beat after we type. So:
+    // 1) let the suggested text settle, 2) write our message, 3) re-assert it a
+    // few times if LinkedIn clobbers it back to the suggestion.
+    if (!useSuggested) {
+      // Give LinkedIn's async suggestion a moment to land before we overwrite it.
+      const settleBy = Date.now() + 1500;
+      let lastSeen = norm(editorValue(editor));
+      while (Date.now() < settleBy) {
+        await sleep(300);
+        const now = norm(editorValue(findComposerEditor() || editor));
+        if (now === lastSeen && now.length) break; // stable & non-empty
+        lastSeen = now;
+      }
+      for (let i = 0; i < 4; i++) {
+        const ed = findComposerEditor() || editor;
+        if (norm(editorValue(ed)) === norm(msg)) break;
+        await setEditorText(ed, msg);
+        await sleep(rand(450, 800));
+      }
+      editor = findComposerEditor() || editor;
     }
     if (norm(editorValue(editor)).length === 0)
       return { ok: false, msg: "Message box opened but stayed empty after typing." };

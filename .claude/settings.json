@@ -4,7 +4,8 @@
       "Bash(git -c user.name=Vivek -c user.email=iamviveklalan@gmail.com commit -q -m 'Catch-up: reliable send across SDUI modal + messaging overlay *)",
       "Bash(git -c user.name=Vivek -c user.email=iamviveklalan@gmail.com commit -q -m 'Catch-up: fix Enter-to-send on the New-message overlay \\(no Send button\\) *)",
       "Bash(git -c user.name=Vivek -c user.email=iamviveklalan@gmail.com commit -q -m 'Catch-up: safer compose-overlay send + send-button fallback *)",
-      "Bash(git -c user.name=Vivek -c user.email=iamviveklalan@gmail.com commit -q -m 'Catch-up: restore form.requestSubmit\\(\\) for the Press-Enter-to-Send overlay *)"
+      "Bash(git -c user.name=Vivek -c user.email=iamviveklalan@gmail.com commit -q -m 'Catch-up: restore form.requestSubmit\\(\\) for the Press-Enter-to-Send overlay *)",
+      "Bash(git -c user.name=Vivek -c user.email=iamviveklalan@gmail.com commit -q -m 'Catch-up: re-assert message over LinkedIn'\\\\''s AI suggestion + log send-options menu *)"
     ]
   }
 }
