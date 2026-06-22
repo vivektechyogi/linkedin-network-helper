@@ -1278,6 +1278,13 @@
           if (typeof r.cuAppend === "string") appendText = r.cuAppend;
           if (typeof r.cuSuggested === "boolean") useSuggested = r.cuSuggested;
           if (typeof r.cuSecond === "boolean") sendSecond = r.cuSecond;
+          // One-time repair: an earlier paste left a birthday message saved under
+          // the New-job template. If the saved New-job text is clearly a birthday
+          // message (and not about a job/role), reset it to the proper default.
+          if (/\bbirthday\b/i.test(templates.newJob) && !/\b(role|job|position)\b/i.test(templates.newJob)) {
+            templates.newJob = TEMPLATE_DEFAULTS.newJob;
+            save();
+          }
           cb();
         }
       );
