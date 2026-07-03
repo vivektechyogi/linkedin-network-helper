@@ -770,6 +770,16 @@
       }
     };
 
+    // A recipient name is short and plain. Reject anything that reads like a
+    // MESSAGE (LinkedIn pre-fills a suggested congrats into a <p> inside the
+    // composer, e.g. "Congrats on starting your new role at Finfactor!") — else
+    // the wrong-recipient guard compares a sentence to a name and skips forever.
+    const looksLikeName = (t) =>
+      !!t &&
+      t.split(/\s+/).length <= 5 &&
+      !/[!?.]/.test(t) &&
+      !/\b(congrat|anniversar|birthday|new (job|role|position)|promot|wishing|hope|started|joined|completed)\b/i.test(t);
+
     const pill = q("[class*='added-recipients'] .artdeco-pill__text") || q(".artdeco-pill__text");
     if (pill) return norm(pill.textContent);
     const card =
@@ -779,14 +789,16 @@
     const title = q(".msg-overlay-bubble-header__title");
     if (title) {
       const t = norm(title.textContent);
-      if (t && !/new message/i.test(t)) return t;
+      if (t && !/new message/i.test(t) && looksLikeName(t)) return t;
     }
     // SDUI "Send message" modal: the recipient name is the first paragraph in
     // the dialog body (the event description follows in a second paragraph).
+    // Only trust it when it actually looks like a name, not a suggested message.
     const p = q("p");
     if (p) {
       const t = norm(p.textContent);
-      if (t && !/^send message$/i.test(t) && !/^write a message/i.test(t)) return t;
+      if (t && !/^send message$/i.test(t) && !/^write a message/i.test(t) && looksLikeName(t))
+        return t;
     }
     return "";
   }
