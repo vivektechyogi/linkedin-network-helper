@@ -188,8 +188,14 @@
   }
 
   // Collect every editable-ish element across the document AND open shadow roots.
+  // CRITICAL: exclude our OWN panel's fields (the template + note textareas). If
+  // they leak in, findComposerEditor() can pick one as the "message box" and we
+  // type the outgoing message into a template field — whose input listener then
+  // saves that rendered message (wrong name, duplicated note) as the template.
   function collectEditables() {
-    return deepQueryAll("[contenteditable], [role='textbox'], textarea");
+    return deepQueryAll("[contenteditable], [role='textbox'], textarea").filter(
+      (el) => !(el.closest && el.closest("#liw-panel"))
+    );
   }
 
   function clsOf(el) {
@@ -271,7 +277,10 @@
       return s;
     };
     cands.sort((a, b) => score(b) - score(a));
-    return cands.length && score(cands[0]) > 0 ? cands[0] : cands[0] || null;
+    // Only return a real composer. If the best candidate scores 0 (not in a
+    // messaging container, not visible), treat it as "no composer found" rather
+    // than typing into some unrelated editable on the page.
+    return cands.length && score(cands[0]) > 0 ? cands[0] : null;
   }
 
   // Dump what's on the page so we can see why the editor wasn't found.
@@ -403,6 +412,33 @@
       "editorInDom=", document.contains(editor)
     );
 
+    // Idempotency guard — the core protection against duplicate messages.
+    // `stillUnsent()` returns true ONLY when it's safe to (re)fire a send, i.e.
+    // the message has demonstrably NOT left yet. It says "already sent, do not
+    // fire" on ANY of these positive delivery signals:
+    //   1) our exact text is already a delivered bubble in the thread, or
+    //   2) the composer editor is gone (conversation left / box closed), or
+    //   3) the box has been emptied (a send always clears it).
+    // Every send mechanism below is gated on this, so once the message is out
+    // no further mechanism — button, form submit, Enter, menu — can resend it.
+    const stillUnsent = () => {
+      if (sentBubblePresent(container, want)) return false; // already in thread
+      const ed = findComposerEditor();
+      if (!ed) return false; // editor gone → conversation left / box closed
+      return norm(editorValue(ed)).length > 0; // box still populated → not sent
+    };
+    // Wait up to `ms` for a send to confirm, polling often. Using a patient
+    // poll (instead of one short sleep) means we give LinkedIn's slow box-clear
+    // time to happen BEFORE we'd otherwise re-fire and duplicate the message.
+    const waitCleared = async (ms) => {
+      const until = Date.now() + ms;
+      while (Date.now() < until) {
+        if (confirmedSent(container, want)) return true;
+        await sleep(200);
+      }
+      return confirmedSent(container, want);
+    };
+
     // 1) An explicit Send button/control, if this state has one. Cover plain
     //    <button>s, role="button" divs, and icon buttons labelled via aria —
     //    the SDUI "Send message" modal uses one of these. Prefer a control
@@ -485,16 +521,19 @@
     T("step1 sendBtn=", !!sendBtn, "trusted=", trusted);
     if (sendBtn) {
       await humanClick(sendBtn);
-      try {
-        sendBtn.click(); // native click as a reliable fallback for the handler
-      } catch (_) {}
-      await sleep(rand(900, 1500));
-      if (confirmedSent(container, want)) return finish(true, "step1 button + confirm");
-      await sleep(rand(800, 1400)); // network/close can lag
-      if (confirmedSent(container, want)) return finish(true, "step1 button + confirm(2)");
+      // Native click as a fallback for the handler — but only if the synthetic
+      // click above didn't already send it, so we never fire the send twice.
+      if (stillUnsent()) {
+        try { sendBtn.click(); } catch (_) {}
+      }
+      if (await waitCleared(2500)) return finish(true, "step1 button + confirm");
       // Clicked an enabled Send control inside the composer → trust it as sent.
       if (trusted) return finish(true, "step1 trusted button click");
     }
+
+    // If any mechanism above already emptied the box, the message has left —
+    // stop here rather than re-sending it via the fallbacks below.
+    if (!stillUnsent()) return finish(true, "box cleared after step1");
 
     // 2) Submit the message form directly. This is the mechanism that works for
     //    the "Press Enter to Send" overlay: LinkedIn's msg-form has its own
@@ -506,7 +545,7 @@
       document.querySelector("form.msg-form, form.msg-form--thread-footer-feature");
     const formSubmitBtn = form && form.querySelector("button[type='submit']");
     T("step2 form=", !!form, "submitBtn=", !!formSubmitBtn);
-    if (form) {
+    if (form && stillUnsent()) {
       try {
         if (form.requestSubmit) form.requestSubmit(formSubmitBtn || undefined);
         else if (formSubmitBtn) formSubmitBtn.click();
@@ -515,10 +554,7 @@
       } catch (_) {
         try { form.requestSubmit && form.requestSubmit(); } catch (__) {}
       }
-      await sleep(rand(800, 1200));
-      if (confirmedSent(container, want)) return finish(true, "step2 form submit");
-      await sleep(rand(700, 1100));
-      if (confirmedSent(container, want)) return finish(true, "step2 form submit(2)");
+      if (await waitCleared(2500)) return finish(true, "step2 form submit");
     }
 
     // 3) Enter key on the (freshly found) editor, retried. For the messaging
@@ -526,7 +562,11 @@
     //    reads "Press Enter to Send" with no Send button). (No-op for a plain
     //    SDUI textarea where Enter inserts a newline — handled by the button
     //    path above.)
-    for (let attempt = 0; attempt < 5; attempt++) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      // Re-check BEFORE each press: if a previous press already sent the message
+      // (box now empty) we must not press Enter again, or the same text goes out
+      // a second time. This is the guard that stops the P.S. duplicating.
+      if (!stillUnsent()) return finish(true, "step3 cleared before Enter#" + attempt);
       const ed = findComposerEditor() || editor;
       // Blur the recipient typeahead so Enter targets the message box, not the
       // recipient search (this is a "New message" compose overlay).
@@ -537,15 +577,16 @@
         if (search && document.activeElement === search) search.blur();
       } catch (_) {}
       pressEnter(ed);
-      await sleep(rand(700, 1100));
-      if (confirmedSent(container, want)) return finish(true, "step3 Enter#" + attempt);
+      // Wait patiently for the box to clear before concluding it didn't send —
+      // a slow send that's still in flight must not trigger another Enter.
+      if (await waitCleared(3000)) return finish(true, "step3 Enter#" + attempt);
       if (sentBubblePresent(container, want)) return finish(true, "step3 Enter bubble#" + attempt);
     }
     T("step3 Enter exhausted; editorText=", norm(editorValue(findComposerEditor() || editor)).slice(0, 40));
 
     // 3b) Last resort for the compose overlay: open the send-options menu and
     //     click an explicit Send item if LinkedIn offers one there.
-    if (!formSubmitBtn) {
+    if (!formSubmitBtn && stillUnsent()) {
       const sent = await sendViaOptionsMenu(container, want, T);
       if (sent) return finish(true, "step3b options-menu Send button");
     }
@@ -554,11 +595,10 @@
     //    it anyway (its handler often still fires) and verify by thread bubble.
     const stuck = referralBtn();
     T("step4 stuckReferralBtn=", !!stuck);
-    if (stuck) {
+    if (stuck && stillUnsent()) {
       try { stuck.click(); } catch (_) {}
-      await humanClick(stuck);
-      await sleep(rand(900, 1400));
-      if (confirmedSent(container, want)) return finish(true, "step4 stuck button");
+      if (stillUnsent()) await humanClick(stuck); // avoid a second send handler
+      if (await waitCleared(2500)) return finish(true, "step4 stuck button");
     }
 
     // Still here → couldn't submit. Dump the candidate buttons so we can see
@@ -654,7 +694,11 @@
       });
       if (sendBtn) {
         await humanClick(sendBtn);
-        try { sendBtn.click(); } catch (_) {}
+        // Only add the native click if the synthetic one didn't already send,
+        // so the menu path can't fire the send twice either.
+        if (!confirmedSent(container, want)) {
+          try { sendBtn.click(); } catch (_) {}
+        }
         await sleep(rand(800, 1300));
         if (confirmedSent(container, want)) return true;
         await sleep(rand(700, 1100));
@@ -1278,13 +1322,21 @@
           if (typeof r.cuAppend === "string") appendText = r.cuAppend;
           if (typeof r.cuSuggested === "boolean") useSuggested = r.cuSuggested;
           if (typeof r.cuSecond === "boolean") sendSecond = r.cuSecond;
-          // One-time repair: an earlier paste left a birthday message saved under
-          // the New-job template. If the saved New-job text is clearly a birthday
-          // message (and not about a job/role), reset it to the proper default.
-          if (/\bbirthday\b/i.test(templates.newJob) && !/\b(role|job|position)\b/i.test(templates.newJob)) {
-            templates.newJob = TEMPLATE_DEFAULTS.newJob;
-            save();
+          // Repair templates that got clobbered by a leaked outgoing message
+          // (the old bug that typed a rendered message into a template field).
+          // Every valid template uses the {name} placeholder — the UI even
+          // instructs it — so a saved template that has lost {name} has been
+          // overwritten with a rendered message (a real name baked in, and
+          // often the note/pitch appended). Reset any such template to default.
+          let repaired = false;
+          for (const key of Object.keys(TEMPLATE_DEFAULTS)) {
+            const t = templates[key];
+            if (typeof t !== "string" || !t.includes("{name}")) {
+              templates[key] = TEMPLATE_DEFAULTS[key];
+              repaired = true;
+            }
           }
+          if (repaired) save();
           cb();
         }
       );
